@@ -14,7 +14,10 @@ import {
   type InstalledPluginIndex,
 } from "./installed-plugin-index.js";
 import type { PluginMetadataSnapshot } from "./plugin-metadata-snapshot.types.js";
-import { loadPluginRegistrySnapshotWithMetadata } from "./plugin-registry-snapshot.js";
+import {
+  clearPluginRegistrySnapshotMemo,
+  loadPluginRegistrySnapshotWithMetadata,
+} from "./plugin-registry-snapshot.js";
 import { cleanupTrackedTempDirs, makeTrackedTempDir } from "./test-helpers/fs-fixtures.js";
 import { writeManagedNpmPlugin } from "./test-helpers/managed-npm-plugin.js";
 
@@ -23,6 +26,7 @@ const tempDirs: string[] = [];
 afterEach(() => {
   vi.restoreAllMocks();
   clearCurrentPluginMetadataSnapshot();
+  clearPluginRegistrySnapshotMemo();
   cleanupTrackedTempDirs(tempDirs);
 });
 
@@ -150,6 +154,80 @@ function requirePluginRecord(
 }
 
 describe("loadPluginRegistrySnapshotWithMetadata", () => {
+  // Regression for Bug 5: loadPluginRegistrySnapshotWithMetadata previously
+  // had no memo of its own. Cold TUI startup logged ~489 calls all falling
+  // through to a fresh derived discovery cascade. A process-scoped LRU now
+  // memoizes results for the (config, env, workspaceDir, stateDir,
+  // preferPersisted) input shape.
+  it("memoizes derived results across consecutive identical calls", () => {
+    const env = createHermeticEnv(makeTempDir());
+    const config = {};
+
+    const first = loadPluginRegistrySnapshotWithMetadata({ config, env });
+    const second = loadPluginRegistrySnapshotWithMetadata({ config, env });
+
+    expect(second).toBe(first);
+  });
+
+  it("invalidates the process memo when the persisted index is written", () => {
+    const env = createHermeticEnv(makeTempDir());
+    const config = {};
+
+    const first = loadPluginRegistrySnapshotWithMetadata({ config, env });
+    const policyHash = resolveInstalledPluginIndexPolicyHash(config);
+    const stateDir = env.OPENCLAW_STATE_DIR;
+    if (!stateDir) {
+      throw new Error("expected hermetic env to set OPENCLAW_STATE_DIR");
+    }
+    writePersistedInstalledPluginIndexSync(
+      {
+        version: 1,
+        hostContractVersion: "test",
+        compatRegistryVersion: "test",
+        migrationVersion: 1,
+        policyHash,
+        generatedAtMs: 1,
+        installRecords: {},
+        plugins: [],
+        diagnostics: [],
+      },
+      { stateDir },
+    );
+    const after = loadPluginRegistrySnapshotWithMetadata({ config, env });
+
+    expect(after).not.toBe(first);
+  });
+
+  it("keeps distinct entries for different preferPersisted shapes", () => {
+    const env = createHermeticEnv(makeTempDir());
+    const config = {};
+
+    const persisted = loadPluginRegistrySnapshotWithMetadata({
+      config,
+      env,
+      preferPersisted: true,
+    });
+    const derivedOnly = loadPluginRegistrySnapshotWithMetadata({
+      config,
+      env,
+      preferPersisted: false,
+    });
+    const persistedAgain = loadPluginRegistrySnapshotWithMetadata({
+      config,
+      env,
+      preferPersisted: true,
+    });
+    const derivedAgain = loadPluginRegistrySnapshotWithMetadata({
+      config,
+      env,
+      preferPersisted: false,
+    });
+
+    expect(persistedAgain).toBe(persisted);
+    expect(derivedAgain).toBe(derivedOnly);
+    expect(persisted).not.toBe(derivedOnly);
+  });
+
   it("reuses a compatible current metadata snapshot", () => {
     const env = createHermeticEnv(makeTempDir());
     const config = {};
