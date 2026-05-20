@@ -1,6 +1,7 @@
 import type { TUI } from "@earendil-works/pi-tui";
 import { resolveSessionInfoModelSelection } from "../agents/model-selection-display.js";
 import type { SessionsPatchResult } from "../gateway/protocol/index.js";
+import { perfMark, perfSpan } from "../infra/perf-trace.js";
 import {
   normalizeAgentId,
   normalizeMainKey,
@@ -295,7 +296,12 @@ export function createSessionActions(context: SessionActionContext) {
   };
 
   const loadHistory = async () => {
+    const endLoad = perfSpan("tui.loadHistory", {
+      sessionKey: state.currentSessionKey,
+      limit: opts.historyLimit ?? 200,
+    });
     try {
+      const endFetch = perfSpan("tui.loadHistory.fetch");
       const history = await client.loadHistory({
         sessionKey: state.currentSessionKey,
         limit: opts.historyLimit ?? 200,
@@ -308,17 +314,30 @@ export function createSessionActions(context: SessionActionContext) {
         verboseLevel?: string;
         traceLevel?: string;
       };
+      const messageCount = Array.isArray(record.messages) ? record.messages.length : 0;
+      endFetch({ messageCount });
       state.currentSessionId = typeof record.sessionId === "string" ? record.sessionId : null;
       state.sessionInfo.thinkingLevel = record.thinkingLevel ?? state.sessionInfo.thinkingLevel;
       state.sessionInfo.fastMode = record.fastMode ?? state.sessionInfo.fastMode;
       state.sessionInfo.verboseLevel = record.verboseLevel ?? state.sessionInfo.verboseLevel;
       state.sessionInfo.traceLevel = record.traceLevel ?? state.sessionInfo.traceLevel;
       const showTools = (state.sessionInfo.verboseLevel ?? "off") !== "off";
+      const endClear = perfSpan("tui.loadHistory.clear");
       chatLog.clearAll();
       btw.clear();
       chatLog.addSystem(`session ${state.currentSessionKey}`);
+      endClear();
+      const endBuild = perfSpan("tui.loadHistory.buildComponents", {
+        messageCount,
+        showTools,
+        showThinking: state.showThinking,
+      });
+      const counts = { command: 0, user: 0, assistant: 0, toolResult: 0, skipped: 0 };
+      let totalAssistantChars = 0;
+      let totalToolChars = 0;
       for (const entry of record.messages ?? []) {
         if (!entry || typeof entry !== "object") {
+          counts.skipped++;
           continue;
         }
         const message = entry as Record<string, unknown>;
@@ -326,6 +345,7 @@ export function createSessionActions(context: SessionActionContext) {
           const text = extractTextFromMessage(message);
           if (text) {
             chatLog.addSystem(text);
+            counts.command++;
           }
           continue;
         }
@@ -333,6 +353,7 @@ export function createSessionActions(context: SessionActionContext) {
           const text = extractTextFromMessage(message);
           if (text) {
             chatLog.addUser(text);
+            counts.user++;
           }
           continue;
         }
@@ -342,6 +363,8 @@ export function createSessionActions(context: SessionActionContext) {
           });
           if (text) {
             chatLog.finalizeAssistant(text);
+            counts.assistant++;
+            totalAssistantChars += text.length;
           }
           continue;
         }
@@ -352,11 +375,12 @@ export function createSessionActions(context: SessionActionContext) {
           const toolCallId = asString(message.toolCallId, "");
           const toolName = asString(message.toolName, "tool");
           const component = chatLog.startTool(toolCallId, toolName, {});
+          const content = Array.isArray(message.content)
+            ? (message.content as Record<string, unknown>[])
+            : [];
           component.setResult(
             {
-              content: Array.isArray(message.content)
-                ? (message.content as Record<string, unknown>[])
-                : [],
+              content,
               details:
                 typeof message.details === "object" && message.details
                   ? (message.details as Record<string, unknown>)
@@ -364,15 +388,27 @@ export function createSessionActions(context: SessionActionContext) {
             },
             { isError: Boolean(message.isError) },
           );
+          counts.toolResult++;
+          for (const piece of content) {
+            const text = typeof piece?.text === "string" ? piece.text : "";
+            totalToolChars += text.length;
+          }
         }
       }
+      endBuild({ ...counts, totalAssistantChars, totalToolChars });
       state.historyLoaded = true;
       void rememberSessionKey?.(state.currentSessionKey);
     } catch (err) {
+      perfMark("tui.loadHistory.error", { error: String(err) });
       chatLog.addSystem(`history failed: ${String(err)}`);
     }
+    const endRefresh = perfSpan("tui.loadHistory.refreshSessionInfo");
     await refreshSessionInfo();
+    endRefresh();
+    const endRender = perfSpan("tui.loadHistory.requestRender");
     tui.requestRender();
+    endRender();
+    endLoad();
   };
 
   const setSession = async (rawKey: string) => {

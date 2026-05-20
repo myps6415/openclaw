@@ -3,6 +3,20 @@ import path from "node:path";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
 import { readRootJsonObjectSync } from "../infra/json-files.js";
 import { tryReadJsonSync } from "../infra/json-files.js";
+import { perfMark, perfSpan } from "../infra/perf-trace.js";
+
+function captureCallerFrame(skip = 2): string {
+  const stack = new Error().stack;
+  if (!stack) return "";
+  const lines = stack.split("\n").slice(skip + 1);
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line.startsWith("at ")) continue;
+    if (line.includes("perf-trace") || line.includes("captureCallerFrame")) continue;
+    return line.slice(3, 200);
+  }
+  return "";
+}
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
@@ -486,6 +500,7 @@ function readPackageManifest(
   rejectHardlinks = true,
   rootRealPath?: string,
 ): PackageManifest | null {
+  perfMark("discovery.readPackageManifest", { dir, caller: captureCallerFrame(2) });
   const result = readRootJsonObjectSync({
     rootDir: dir,
     ...(rootRealPath !== undefined ? { rootRealPath } : {}),
@@ -497,6 +512,7 @@ function readPackageManifest(
 }
 
 function readTrustedPackageManifest(dir: string): PackageManifest | null {
+  perfMark("discovery.readTrustedPackageManifest", { dir, caller: captureCallerFrame(2) });
   return tryReadJsonSync<PackageManifest>(path.join(dir, "package.json"));
 }
 
@@ -1225,6 +1241,28 @@ function discoverFromPath(params: {
 }
 
 export function discoverOpenClawPlugins(params: {
+  workspaceDir?: string;
+  extraPaths?: string[];
+  installRecords?: Record<string, PluginInstallRecord>;
+  ownershipUid?: number | null;
+  env?: NodeJS.ProcessEnv;
+}): PluginDiscoveryResult {
+  const endDiscovery = perfSpan("discovery.discoverOpenClawPlugins", {
+    caller1: captureCallerFrame(2),
+    caller2: captureCallerFrame(3),
+    caller3: captureCallerFrame(4),
+    extraPathsCount: params.extraPaths?.length ?? 0,
+    installRecordsCount: params.installRecords ? Object.keys(params.installRecords).length : 0,
+    workspaceDir: params.workspaceDir,
+  });
+  try {
+    return discoverOpenClawPluginsInner(params);
+  } finally {
+    endDiscovery();
+  }
+}
+
+function discoverOpenClawPluginsInner(params: {
   workspaceDir?: string;
   extraPaths?: string[];
   installRecords?: Record<string, PluginInstallRecord>;

@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { createJiti } from "jiti";
+import { perfSpan } from "../infra/perf-trace.js";
 import { toSafeImportPath } from "../shared/import-specifier.js";
 import { tryNativeRequireJavaScriptModule } from "./native-module-require.js";
 import { PluginLruCache } from "./plugin-cache-primitives.js";
@@ -108,11 +109,14 @@ function loadCreateJitiLoaderFactory(): PluginModuleLoaderFactory {
   if (createJitiLoaderFactory) {
     return createJitiLoaderFactory;
   }
+  const end = perfSpan("plugins.loader.requireJiti");
   const loaded = requireForJiti("jiti") as { createJiti?: PluginModuleLoaderFactory };
   if (typeof loaded.createJiti !== "function") {
+    end({ ok: false });
     throw new Error("jiti module did not export createJiti");
   }
   createJitiLoaderFactory = loaded.createJiti;
+  end({ ok: true });
   return createJitiLoaderFactory;
 }
 
@@ -255,13 +259,18 @@ function createPluginModuleLoader(params: {
   // target through jiti so those alias rewrites still apply.
   if (!params.tryNative) {
     return ((target: string, ...rest: unknown[]) => {
+      const end = perfSpan("plugins.loader.load", { target, branch: "source-forced" });
       pluginModuleLoaderStats.calls += 1;
       pluginModuleLoaderStats.sourceTransformForced += 1;
       recordSourceTransformTarget(target);
-      return (getLoadWithSourceTransform() as (t: string, ...a: unknown[]) => unknown)(
-        target,
-        ...rest,
-      );
+      try {
+        return (getLoadWithSourceTransform() as (t: string, ...a: unknown[]) => unknown)(
+          target,
+          ...rest,
+        );
+      } finally {
+        end();
+      }
     }) as PluginModuleLoader;
   }
   // Otherwise prefer native require() for already-compiled JS artifacts
@@ -276,14 +285,19 @@ function createPluginModuleLoader(params: {
     sourceTransformTryNative: false,
   });
   return ((target: string, ...rest: unknown[]) => {
+    const end = perfSpan("plugins.loader.load", { target });
     pluginModuleLoaderStats.calls += 1;
     if (shouldForceSourceTransformForPluginSdkAlias({ target, aliasMap: params.aliasMap })) {
       pluginModuleLoaderStats.sourceTransformForced += 1;
       recordSourceTransformTarget(target);
-      return (getLoadWithAliasTransform() as (t: string, ...a: unknown[]) => unknown)(
-        target,
-        ...rest,
-      );
+      try {
+        return (getLoadWithAliasTransform() as (t: string, ...a: unknown[]) => unknown)(
+          target,
+          ...rest,
+        );
+      } finally {
+        end({ branch: "alias-forced" });
+      }
     }
     const native = tryNativeRequireJavaScriptModule(target, {
       allowWindows: true,
@@ -293,15 +307,20 @@ function createPluginModuleLoader(params: {
     });
     if (native.ok) {
       pluginModuleLoaderStats.nativeHits += 1;
+      end({ branch: "native" });
       return native.moduleExport;
     }
     pluginModuleLoaderStats.nativeMisses += 1;
     pluginModuleLoaderStats.sourceTransformFallbacks += 1;
     recordSourceTransformTarget(target);
-    return (getLoadWithSourceTransform() as (t: string, ...a: unknown[]) => unknown)(
-      target,
-      ...rest,
-    );
+    try {
+      return (getLoadWithSourceTransform() as (t: string, ...a: unknown[]) => unknown)(
+        target,
+        ...rest,
+      );
+    } finally {
+      end({ branch: "source-fallback" });
+    }
   }) as PluginModuleLoader;
 }
 
