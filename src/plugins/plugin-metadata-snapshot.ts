@@ -6,6 +6,7 @@ import {
   getActiveDiagnosticsTimelineSpan,
   measureDiagnosticsTimelineSpanSync,
 } from "../infra/diagnostics-timeline.js";
+import { perfMark } from "../infra/perf-trace.js";
 import { resolveUserPath } from "../utils.js";
 import { resolveCompatibilityHostVersion } from "../version.js";
 import { resolveDefaultPluginNpmDir } from "./install-paths.js";
@@ -713,6 +714,17 @@ export function loadPluginMetadataSnapshot(
     memo,
   );
   const memoKey = computePluginMetadataSnapshotMemoKey({ params, registryState });
+  perfMark("plugins.loadPluginMetadataSnapshot.enter", {
+    hasMemo: !!memo,
+    keyMatch: memo?.key === memoKey,
+    memoKey: memoKey.slice(0, 16),
+    priorKey: memo?.key.slice(0, 16),
+    hasIndex: params.index !== undefined,
+    hasConfig: params.config !== undefined,
+    hasWorkspaceDir: params.workspaceDir !== undefined,
+    hasStateDir: params.stateDir !== undefined,
+    hasPreferPersisted: params.preferPersisted !== undefined,
+  });
   if (memo?.key === memoKey) {
     return measureDiagnosticsTimelineSpanSync(
       "plugins.metadata.scan",
@@ -743,7 +755,8 @@ export function loadPluginMetadataSnapshot(
       },
     },
   );
-  if (canMemoizePluginMetadataSnapshotResult(result)) {
+  const canMemo = canMemoizePluginMetadataSnapshotResult(result);
+  if (canMemo) {
     const cachedRegistryState =
       result.registrySource === "derived"
         ? resolvePersistedRegistryMemoState({
@@ -755,11 +768,25 @@ export function loadPluginMetadataSnapshot(
               : {}),
           })
         : registryState;
+    const storedKey = computePluginMetadataSnapshotMemoKey({
+      params,
+      registryState: cachedRegistryState,
+    });
+    perfMark("plugins.loadPluginMetadataSnapshot.store", {
+      lookupKey: memoKey.slice(0, 16),
+      storedKey: storedKey.slice(0, 16),
+      keyMismatch: storedKey !== memoKey,
+      registrySource: result.registrySource,
+    });
     pluginMetadataSnapshotMemo = {
-      key: computePluginMetadataSnapshotMemoKey({ params, registryState: cachedRegistryState }),
+      key: storedKey,
       registryState: cachedRegistryState,
       snapshot: clonePluginMetadataSnapshot(result.snapshot),
     };
+  } else {
+    perfMark("plugins.loadPluginMetadataSnapshot.notMemoized", {
+      registrySource: result.registrySource,
+    });
   }
   return result.snapshot;
 }

@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { perfMark } from "../infra/perf-trace.js";
 import { resolveUserPath } from "../utils.js";
 import { resolveBundledPluginsDir } from "./bundled-dir.js";
 import { getCurrentPluginMetadataSnapshot } from "./current-plugin-metadata-snapshot.js";
@@ -273,16 +274,20 @@ export function loadPluginRegistrySnapshotWithMetadata(
   params: LoadPluginRegistryParams = {},
 ): PluginRegistrySnapshotResult {
   if (params.index) {
+    perfMark("plugins.loadPluginRegistrySnapshot.gate", { outcome: "index-provided" });
     return {
       snapshot: params.index,
       source: "provided",
       diagnostics: [],
     };
   }
+  const reuseGate = !canReuseCurrentPluginMetadataSnapshot(params) ? "params-block" : undefined;
   const current = loadCurrentPluginRegistrySnapshotResult(params);
   if (current) {
+    perfMark("plugins.loadPluginRegistrySnapshot.gate", { outcome: "current-hit" });
     return current;
   }
+  const currentMissReason = reuseGate ?? "current-missing-or-diagnostics";
 
   const env = params.env ?? process.env;
   const diagnostics: PluginRegistrySnapshotDiagnostic[] = [];
@@ -346,6 +351,10 @@ export function loadPluginRegistrySnapshotWithMetadata(
             "Persisted plugin registry is missing recoverable managed npm plugins; using derived plugin index. Run `openclaw plugins registry --refresh` to update the persisted registry.",
         });
       } else {
+        perfMark("plugins.loadPluginRegistrySnapshot.gate", {
+          outcome: "persisted-hit",
+          currentMiss: currentMissReason,
+        });
         return {
           snapshot: persistedIndex,
           source: "persisted",
@@ -369,6 +378,13 @@ export function loadPluginRegistrySnapshotWithMetadata(
     });
   }
 
+  perfMark("plugins.loadPluginRegistrySnapshot.gate", {
+    outcome: "derived-fallback",
+    currentMiss: currentMissReason,
+    persistedReadsEnabled,
+    persistedIndexFound: !!persistedIndex,
+    diagnosticCodes: diagnostics.map((d) => d.code).join(","),
+  });
   return {
     snapshot: loadInstalledPluginIndex({
       ...params,
