@@ -15,7 +15,6 @@ import {
 import { resolveAgentIdByWorkspacePath, resolveDefaultAgentId } from "../agents/agent-scope.js";
 import { getRuntimeConfig, type OpenClawConfig } from "../config/config.js";
 import type { CommandEntry } from "../gateway/protocol/index.js";
-import { perfMark, perfSpan } from "../infra/perf-trace.js";
 import { registerUncaughtExceptionHandler } from "../infra/unhandled-rejections.js";
 import { setConsoleSubsystemFilter } from "../logging/console.js";
 import { loggingState } from "../logging/state.js";
@@ -443,11 +442,8 @@ export function resolveTuiCtrlCAction(params: {
 }
 
 export async function runTui(opts: RunTuiOptions): Promise<TuiResult> {
-  const endRunTui = perfSpan("tui.runTui", { local: opts.local === true });
   const isLocalMode = opts.local === true || opts.backend !== undefined;
-  const endConfig = perfSpan("tui.config");
   const config = opts.config ?? getRuntimeConfig();
-  endConfig();
   const initialSessionInput = (opts.session ?? "").trim();
   let sessionScope: SessionScope = (config.session?.scope ?? "per-sender") as SessionScope;
   let sessionMainKey = normalizeMainKey(config.session?.mainKey);
@@ -669,9 +665,6 @@ export async function runTui(opts: RunTuiOptions): Promise<TuiResult> {
     localBtwRunIds.clear();
   };
 
-  const endClientConstruct = perfSpan("tui.clientConstruct", {
-    kind: opts.backend ? "injected" : opts.local ? "embedded" : "gateway",
-  });
   const client: TuiBackend = opts.backend
     ? opts.backend
     : opts.local
@@ -681,7 +674,6 @@ export async function runTui(opts: RunTuiOptions): Promise<TuiResult> {
           token: opts.token,
           password: opts.password,
         });
-  endClientConstruct();
   const previousConsoleSubsystemFilter = isLocalMode
     ? loggingState.consoleSubsystemFilter
       ? [...loggingState.consoleSubsystemFilter]
@@ -692,27 +684,8 @@ export async function runTui(opts: RunTuiOptions): Promise<TuiResult> {
   }
 
   const tui = new TUI(new ProcessTerminal());
-  // Perf audit: time pi-tui's deferred paint and chatLog render passes so we
-  // can see freezes that happen after our requestRender() call returns.
-  {
-    const tuiAny = tui as unknown as { doRender: () => void };
-    const originalDoRender = tuiAny.doRender.bind(tui);
-    let doRenderSeq = 0;
-    tuiAny.doRender = () => {
-      const seq = (doRenderSeq += 1);
-      const end = perfSpan("tui.pi.doRender", { seq });
-      try {
-        originalDoRender();
-      } finally {
-        end();
-      }
-    };
-  }
   const dedupeBackspace = createBackspaceDeduper();
   tui.addInputListener((data) => {
-    // Perf audit: stdin arrived at pi-tui's JS-level dispatcher. If you typed
-    // during a "freeze" and this mark is missing, stdin didn't reach JS at all.
-    perfMark("tui.input.arrived", { bytes: data.length });
     const next = dedupeBackspace(data);
     if (next.length === 0) {
       return { consume: true };
@@ -723,61 +696,6 @@ export async function runTui(opts: RunTuiOptions): Promise<TuiResult> {
   const statusContainer = new Container();
   const footer = new Text("", 1, 0);
   const chatLog = new ChatLog();
-  // Perf audit: time each chatLog render and identify the slowest child so we
-  // can see whether markdown parsing (assistant messages, tool output) is the
-  // bottleneck during the first paint after history load.
-  {
-    const SLOW_TOTAL_MS = 50;
-    const SLOW_CHILD_MS = 20;
-    chatLog.render = (width: number) => {
-      const t0 = performance.now();
-      const children = chatLog.children;
-      const childCount = children.length;
-      const lines: string[] = [];
-      let slowestMs = 0;
-      let slowestIdx = -1;
-      let slowestType = "";
-      const slow: Array<{ idx: number; ms: number; type: string; lines: number }> = [];
-      for (let i = 0; i < children.length; i++) {
-        const child = children[i];
-        if (!child) {
-          continue;
-        }
-        const ct0 = performance.now();
-        const childLines = child.render(width);
-        const ct = performance.now() - ct0;
-        if (ct > slowestMs) {
-          slowestMs = ct;
-          slowestIdx = i;
-          slowestType = child.constructor.name;
-        }
-        if (ct >= SLOW_CHILD_MS) {
-          slow.push({
-            idx: i,
-            ms: +ct.toFixed(2),
-            type: child.constructor.name,
-            lines: childLines.length,
-          });
-        }
-        for (const line of childLines) {
-          lines.push(line);
-        }
-      }
-      const total = performance.now() - t0;
-      if (total >= SLOW_TOTAL_MS) {
-        perfMark("tui.chatLog.render slow", {
-          ms: +total.toFixed(2),
-          childCount,
-          totalLines: lines.length,
-          slowestIdx,
-          slowestMs: +slowestMs.toFixed(2),
-          slowestType,
-          slow,
-        });
-      }
-      return lines;
-    };
-  }
   const editor = new CustomEditor(tui, editorTheme);
   const root = new Container();
   root.addChild(header);
@@ -1449,24 +1367,18 @@ export async function runTui(opts: RunTuiOptions): Promise<TuiResult> {
   });
 
   client.onEvent = (evt) => {
-    const end = perfSpan("tui.client.onEvent", { event: evt.event });
-    try {
-      if (evt.event === "chat") {
-        handleChatEvent(evt.payload);
-      }
-      if (evt.event === "chat.side_result") {
-        handleBtwEvent(evt.payload);
-      }
-      if (evt.event === "agent") {
-        handleAgentEvent(evt.payload);
-      }
-    } finally {
-      end();
+    if (evt.event === "chat") {
+      handleChatEvent(evt.payload);
+    }
+    if (evt.event === "chat.side_result") {
+      handleBtwEvent(evt.payload);
+    }
+    if (evt.event === "agent") {
+      handleAgentEvent(evt.payload);
     }
   };
 
   client.onConnected = () => {
-    perfMark("tui.client.onConnected", { wasDisconnected });
     isConnected = true;
     pairingHintShown = false;
     const reconnected = wasDisconnected;
@@ -1475,50 +1387,27 @@ export async function runTui(opts: RunTuiOptions): Promise<TuiResult> {
       reconnectStreamingWatchdog();
     }
     setConnectionStatus(isLocalMode ? "local ready" : "connected");
-    const endOnConnected = perfSpan("tui.onConnected.bootstrap");
     void (async () => {
-      const endAgents = perfSpan("tui.refreshAgents");
       await refreshAgents();
-      endAgents();
-      const endRemembered = perfSpan("tui.restoreRememberedSession");
       await restoreRememberedSession();
-      endRemembered();
       updateHeader();
       updateAutocompleteProvider();
-      const endLoad = perfSpan("tui.loadHistory.outer", {
-        sessionKey: state.currentSessionKey,
-      });
       await loadHistory();
-      endLoad();
       setConnectionStatus(
         isLocalMode ? "local ready" : reconnected ? "gateway reconnected" : "gateway connected",
         4000,
       );
-      const endFirstRender = perfSpan("tui.requestRender.afterHistory");
       tui.requestRender();
-      endFirstRender();
       if (!autoMessageSent && autoMessage) {
         autoMessageSent = true;
-        const endAuto = perfSpan("tui.sendAutoMessage");
         await sendMessage(autoMessage);
-        endAuto();
       }
       updateFooter();
-      const endSecondRender = perfSpan("tui.requestRender.afterFooter");
       tui.requestRender();
-      endSecondRender();
-      endOnConnected();
-      const idleAt = performance.now();
-      setImmediate(() => {
-        perfMark("tui.onConnected.eventLoopIdle", {
-          gapMs: +(performance.now() - idleAt).toFixed(2),
-        });
-      });
     })().catch((err) => {
       chatLog.addSystem(`startup failed: ${String(err)}`);
       setConnectionStatus("startup failed", 5000);
       tui.requestRender();
-      endOnConnected({ error: String(err) });
     });
   };
 
@@ -1568,14 +1457,8 @@ export async function runTui(opts: RunTuiOptions): Promise<TuiResult> {
   let cleanupTerminalLossHandler: (() => void) | null = installTuiTerminalLossExitHandler(() =>
     requestExit(),
   );
-  const endTuiStart = perfSpan("tui.tui.start");
   tui.start();
-  endTuiStart();
-  const endClientStart = perfSpan("tui.client.start");
   client.start();
-  endClientStart();
-  perfMark("tui.runTui.awaitingFinish");
-  endRunTui();
   await new Promise<void>((resolve) => {
     const finish = () => {
       if (isLocalMode) {

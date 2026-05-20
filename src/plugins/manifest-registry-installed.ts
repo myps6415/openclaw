@@ -2,23 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { tryReadJsonSync } from "../infra/json-files.js";
-import { perfMark } from "../infra/perf-trace.js";
-
-function captureCallerFrame(skip: number, depth: number): string {
-  const stack = new Error().stack;
-  if (!stack) return "";
-  const out: string[] = [];
-  let kept = 0;
-  for (const raw of stack.split("\n").slice(skip + 1)) {
-    const line = raw.trim();
-    if (!line.startsWith("at ")) continue;
-    if (line.includes("perf-trace") || line.includes("captureCallerFrame")) continue;
-    out.push(line.slice(3, 180));
-    kept += 1;
-    if (kept >= depth) break;
-  }
-  return out.join(" | ");
-}
 import { normalizeOptionalString } from "../shared/string-coerce.js";
 import { normalizeOptionalTrimmedStringList } from "../shared/string-normalization.js";
 import type { PluginCandidate } from "./discovery.js";
@@ -381,10 +364,6 @@ function resolveInstalledPackageMetadata(record: InstalledPluginIndexRecord): {
   packageDependencies?: PluginDependencySpecMap;
   packageOptionalDependencies?: PluginDependencySpecMap;
 } {
-  perfMark("plugins.resolveInstalledPackageMetadata", {
-    pluginId: record.pluginId,
-    hash: record.packageJson?.hash?.slice(0, 8),
-  });
   const recordPackageChannel = normalizePersistedPackageChannel(record.packageChannel);
   const fallbackPackageManifest = recordPackageChannel
     ? {
@@ -465,11 +444,6 @@ export function loadPluginManifestRegistryForInstalledIndex(params: {
   includeDisabled?: boolean;
   bundledChannelConfigCollector?: BundledChannelConfigCollector;
 }): PluginManifestRegistry {
-  perfMark("plugins.loadPluginManifestRegistryForInstalledIndex", {
-    pluginCount: params.index.plugins.length,
-    pluginIdsFilter: params.pluginIds?.length ?? null,
-    callers: captureCallerFrame(2, 5),
-  });
   return tracePluginLifecyclePhase(
     "manifest registry",
     () => {

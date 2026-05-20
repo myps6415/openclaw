@@ -1,20 +1,9 @@
 import "./fs-safe-defaults.js";
 import fs from "node:fs";
 import path from "node:path";
-import {
-  tryReadJsonSync as rawTryReadJsonSync,
-  tryReadJson,
-  writeJsonSync,
-} from "@openclaw/fs-safe/json";
-import { perfMark } from "./perf-trace.js";
+import { tryReadJsonSync, tryReadJson, writeJsonSync } from "@openclaw/fs-safe/json";
 
-// Perf-audit wrapper: see src/infra/json-files.ts for context.
-export const tryReadJsonSync = ((...args: unknown[]) => {
-  perfMark("json.tryReadJsonSync", { path: String(args[0]), via: "json-file" });
-  return (rawTryReadJsonSync as (...a: unknown[]) => unknown)(...args);
-}) as typeof rawTryReadJsonSync;
-
-export { tryReadJson, writeJsonSync };
+export { tryReadJson, tryReadJsonSync, writeJsonSync };
 export const readJsonFile = tryReadJson;
 
 function resolveJsonSymlinkTarget(pathname: string): string | undefined {

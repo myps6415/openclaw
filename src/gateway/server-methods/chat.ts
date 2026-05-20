@@ -33,7 +33,6 @@ import { formatErrorMessage, formatUncaughtError } from "../../infra/errors.js";
 import { jsonUtf8Bytes } from "../../infra/json-utf8-bytes.js";
 import { normalizeReplyPayloadsForDelivery } from "../../infra/outbound/payloads.js";
 import { getSessionBindingService } from "../../infra/outbound/session-binding-service.js";
-import { perfSpan } from "../../infra/perf-trace.js";
 import { logLargePayload } from "../../logging/diagnostic-payload.js";
 import {
   appendLocalMediaParentRoots,
@@ -1818,10 +1817,7 @@ export const chatHandlers: GatewayRequestHandlers = {
       limit?: number;
       maxChars?: number;
     };
-    const endHandler = perfSpan("gateway.chat.history", { sessionKey, limit, maxChars });
-    const endLoadEntry = perfSpan("gateway.chat.history.loadSessionEntry", { sessionKey });
     const { cfg, storePath, entry } = loadSessionEntry(sessionKey);
-    endLoadEntry({ hasEntry: !!entry, hasStorePath: !!storePath });
     const sessionId = entry?.sessionId;
     const sessionAgentId = resolveSessionAgentId({ sessionKey, config: cfg });
     const resolvedSessionModel = resolveSessionModelRef(cfg, entry, sessionAgentId);
@@ -1830,11 +1826,6 @@ export const chatHandlers: GatewayRequestHandlers = {
     const requested = typeof limit === "number" ? limit : defaultLimit;
     const max = Math.min(hardMax, requested);
     const maxHistoryBytes = getMaxChatHistoryMessagesBytes();
-    const endReadRecent = perfSpan("gateway.chat.history.readRecentSessionMessagesAsync", {
-      sessionId,
-      hasStorePath: !!storePath,
-      max,
-    });
     const localMessages =
       sessionId && storePath
         ? await readRecentSessionMessagesAsync(sessionId, storePath, entry?.sessionFile, {
@@ -1842,40 +1833,26 @@ export const chatHandlers: GatewayRequestHandlers = {
             maxBytes: Math.max(maxHistoryBytes * 2, 1024 * 1024),
           })
         : [];
-    endReadRecent({ count: localMessages.length });
-    const endAugment = perfSpan("gateway.chat.history.augmentCliImports");
     const rawMessages = augmentChatHistoryWithCliSessionImports({
       entry,
       provider: resolvedSessionModel.provider,
       localMessages,
     });
-    endAugment({ count: rawMessages.length });
     const effectiveMaxChars = resolveEffectiveChatHistoryMaxChars(cfg, maxChars);
-    const endProject = perfSpan("gateway.chat.history.projectAndCanvas", {
-      raw: rawMessages.length,
-      effectiveMaxChars,
-    });
     const normalized = augmentChatHistoryWithCanvasBlocks(
       projectRecentChatDisplayMessages(rawMessages, {
         maxChars: effectiveMaxChars,
         maxMessages: max,
       }),
     );
-    endProject({ count: normalized.length });
     const perMessageHardCap = Math.min(CHAT_HISTORY_MAX_SINGLE_MESSAGE_BYTES, maxHistoryBytes);
-    const endReplace = perfSpan("gateway.chat.history.replaceOversized");
     const replaced = replaceOversizedChatHistoryMessages({
       messages: normalized,
       maxSingleMessageBytes: perMessageHardCap,
     });
-    endReplace({ replacedCount: replaced.replacedCount });
     scheduleChatHistoryManagedImageCleanup({ sessionKey, context });
-    const endCap = perfSpan("gateway.chat.history.capByBytes");
     const capped = capArrayByJsonBytes(replaced.messages, maxHistoryBytes).items;
-    endCap({ count: capped.length });
-    const endBudget = perfSpan("gateway.chat.history.enforceBudget");
     const bounded = enforceChatHistoryFinalBudget({ messages: capped, maxBytes: maxHistoryBytes });
-    endBudget({ count: bounded.messages.length, placeholderCount: bounded.placeholderCount });
     const placeholderCount = replaced.replacedCount + bounded.placeholderCount;
     if (placeholderCount > 0) {
       chatHistoryPlaceholderEmitCount += placeholderCount;
@@ -1909,7 +1886,6 @@ export const chatHandlers: GatewayRequestHandlers = {
       fastMode: entry?.fastMode,
       verboseLevel,
     });
-    endHandler({ returned: bounded.messages.length });
   },
   "chat.abort": async ({ params, respond, context, client }) => {
     if (!validateChatAbortParams(params)) {

@@ -27,7 +27,6 @@ import {
   type SessionsPatchParams,
 } from "../gateway/protocol/index.js";
 import { formatErrorMessage } from "../infra/errors.js";
-import { perfMark, perfSpan } from "../infra/perf-trace.js";
 import { VERSION } from "../version.js";
 import { TUI_SETUP_AUTH_SOURCE_CONFIG, TUI_SETUP_AUTH_SOURCE_ENV } from "./setup-launch-env.js";
 import type {
@@ -136,7 +135,6 @@ export class GatewayChatClient implements TuiBackend {
       minProtocol: MIN_CLIENT_PROTOCOL_VERSION,
       maxProtocol: PROTOCOL_VERSION,
       onHelloOk: (hello) => {
-        perfMark("tui.gw.onHelloOk");
         this.hello = hello;
         this.resolveReady?.();
         this.onConnected?.();
@@ -167,24 +165,15 @@ export class GatewayChatClient implements TuiBackend {
   }
 
   start() {
-    const endReadiness = perfSpan("tui.gw.waitForEventLoopReady");
     void startGatewayClientWhenEventLoopReady(this.client, {
       clientOptions: { preauthHandshakeTimeoutMs: this.connection.preauthHandshakeTimeoutMs },
     })
       .then((readiness) => {
-        endReadiness({
-          ready: readiness.ready,
-          elapsedMs: readiness.elapsedMs,
-          aborted: readiness.aborted,
-          checks: readiness.checks,
-          maxDriftMs: readiness.maxDriftMs,
-        });
         if (!readiness.ready && !readiness.aborted) {
           this.onDisconnected?.("gateway event loop readiness timeout");
         }
       })
       .catch((err: unknown) => {
-        endReadiness({ error: String(err) });
         this.onDisconnected?.(err instanceof Error ? err.message : String(err));
       });
   }
@@ -219,37 +208,22 @@ export class GatewayChatClient implements TuiBackend {
   }
 
   async loadHistory(opts: { sessionKey: string; limit?: number }) {
-    const endOuter = perfSpan("tui.gateway.chat.history.request", {
-      sessionKey: opts.sessionKey,
-      limit: opts.limit,
-    });
     const startedAt = Date.now();
-    let attempt = 0;
-    try {
-      for (;;) {
-        attempt += 1;
-        const endAttempt = perfSpan("tui.gateway.chat.history.attempt", { attempt });
-        try {
-          const result = await this.client.request("chat.history", {
-            sessionKey: opts.sessionKey,
-            limit: opts.limit,
-          });
-          endAttempt({ ok: true });
-          return result;
-        } catch (err) {
-          const withinStartupRetryWindow =
-            Date.now() - startedAt < STARTUP_CHAT_HISTORY_RETRY_TIMEOUT_MS;
-          if (withinStartupRetryWindow && isRetryableStartupUnavailable(err, "chat.history")) {
-            endAttempt({ ok: false, retrying: true });
-            await sleep(resolveStartupRetryDelayMs(err));
-            continue;
-          }
-          endAttempt({ ok: false, retrying: false });
-          throw err;
+    for (;;) {
+      try {
+        return await this.client.request("chat.history", {
+          sessionKey: opts.sessionKey,
+          limit: opts.limit,
+        });
+      } catch (err) {
+        const withinStartupRetryWindow =
+          Date.now() - startedAt < STARTUP_CHAT_HISTORY_RETRY_TIMEOUT_MS;
+        if (withinStartupRetryWindow && isRetryableStartupUnavailable(err, "chat.history")) {
+          await sleep(resolveStartupRetryDelayMs(err));
+          continue;
         }
+        throw err;
       }
-    } finally {
-      endOuter({ attempts: attempt });
     }
   }
 

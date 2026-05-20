@@ -1,17 +1,6 @@
 import fsSync from "node:fs";
 import path from "node:path";
-import { readRootJsonObjectSync as rawReadRootJsonObjectSync } from "@openclaw/fs-safe/json";
-import { perfMark } from "./perf-trace.js";
-
-// Perf-audit wrapper: see src/infra/json-files.ts for context.
-const readRootJsonObjectSync: typeof rawReadRootJsonObjectSync = (params) => {
-  perfMark("json.readRootJsonObjectSync", {
-    rootDir: params.rootDir,
-    relativePath: params.relativePath,
-    via: "package-update-utils",
-  });
-  return rawReadRootJsonObjectSync(params);
-};
+import { readRootJsonObjectSync } from "@openclaw/fs-safe/json";
 
 export function expectedIntegrityForUpdate(
   spec: string | undefined,

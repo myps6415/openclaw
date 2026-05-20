@@ -15,7 +15,6 @@ import {
   ensureInheritedManagedProxyRoutingActive,
   registerManagedProxyGatewayLoopbackBypass,
 } from "../infra/net/proxy/proxy-lifecycle.js";
-import { perfMark, perfSpan } from "../infra/perf-trace.js";
 import { normalizeFingerprint } from "../infra/tls/fingerprint.js";
 import { rawDataToString } from "../infra/ws.js";
 import { logDebug, logError } from "../logger.js";
@@ -330,7 +329,6 @@ export class GatewayClient {
       };
     }
     const unregisterGatewayLoopbackBypass = registerManagedProxyGatewayLoopbackBypass(url);
-    perfMark("gw.client.ws.construct", { url });
     let ws: WebSocket;
     try {
       ws = new WebSocket(url, wsOptions as ClientOptions);
@@ -344,7 +342,6 @@ export class GatewayClient {
     this.clearConnectChallengeTimeout();
 
     ws.on("open", () => {
-      perfMark("gw.client.ws.open");
       this.socketOpened = true;
       if (url.startsWith("wss://") && this.opts.tlsFingerprint) {
         const tlsError = this.validateTlsFingerprint();
@@ -513,13 +510,10 @@ export class GatewayClient {
     if (this.connectSent) {
       return;
     }
-    perfMark("gw.client.sendConnect.start");
-    const endBuild = perfSpan("gw.client.sendConnect.buildAndSend");
     const nonce = normalizeOptionalString(this.connectNonce) ?? "";
     if (!nonce) {
       this.opts.onConnectError?.(new Error("gateway connect challenge missing nonce"));
       this.ws?.close(1008, "connect challenge missing nonce");
-      endBuild({ aborted: "missing-nonce" });
       return;
     }
     this.connectSent = true;
@@ -610,11 +604,8 @@ export class GatewayClient {
       device,
     };
 
-    endBuild();
-    const endConnectRpc = perfSpan("gw.client.connect.request");
     void this.request<HelloOk>("connect", params)
       .then((helloOk) => {
-        endConnectRpc({ ok: true });
         this.pendingDeviceTokenRetry = false;
         this.deviceTokenRetryBudgetUsed = false;
         this.pendingStartupReconnectDelayMs = null;
@@ -640,7 +631,6 @@ export class GatewayClient {
         this.opts.onHelloOk?.(helloOk);
       })
       .catch((err) => {
-        endConnectRpc({ ok: false, error: String(err) });
         this.pendingConnectErrorDetailCode =
           err instanceof GatewayClientRequestError ? readConnectErrorDetailCode(err.details) : null;
         this.pendingConnectErrorDetails =
@@ -905,7 +895,6 @@ export class GatewayClient {
         this.lastTick = Date.now();
         const evt = parsed;
         if (evt.event === "connect.challenge") {
-          perfMark("gw.client.connectChallenge.received");
           const payload = evt.payload as { nonce?: unknown } | undefined;
           const nonce = payload && typeof payload.nonce === "string" ? payload.nonce : null;
           if (!nonce || nonce.trim().length === 0) {

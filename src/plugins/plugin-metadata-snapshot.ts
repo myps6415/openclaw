@@ -6,7 +6,6 @@ import {
   getActiveDiagnosticsTimelineSpan,
   measureDiagnosticsTimelineSpanSync,
 } from "../infra/diagnostics-timeline.js";
-import { perfMark } from "../infra/perf-trace.js";
 import { resolveUserPath } from "../utils.js";
 import { resolveCompatibilityHostVersion } from "../version.js";
 import { resolveDefaultPluginNpmDir } from "./install-paths.js";
@@ -71,6 +70,9 @@ function findFastPathRegistryState(
 ): PersistedRegistryMemoState | undefined {
   for (const entry of pluginMetadataSnapshotMemo.values()) {
     const state = entry.registryState;
+    if (!state) {
+      continue;
+    }
     if (
       state.contextHash === contextHash &&
       state.fastHash === fastHash &&
@@ -733,17 +735,6 @@ export function loadPluginMetadataSnapshot(
   });
   const memoKey = computePluginMetadataSnapshotMemoKey({ params, registryState });
   const cached = pluginMetadataSnapshotMemo.get(memoKey);
-  perfMark("plugins.loadPluginMetadataSnapshot.enter", {
-    hasMemo: pluginMetadataSnapshotMemo.size > 0,
-    keyMatch: !!cached,
-    memoKey: memoKey.slice(0, 16),
-    memoSize: pluginMetadataSnapshotMemo.size,
-    hasIndex: params.index !== undefined,
-    hasConfig: params.config !== undefined,
-    hasWorkspaceDir: params.workspaceDir !== undefined,
-    hasStateDir: params.stateDir !== undefined,
-    hasPreferPersisted: params.preferPersisted !== undefined,
-  });
   if (cached) {
     // Refresh LRU position on hit.
     pluginMetadataSnapshotMemo.delete(memoKey);
@@ -777,20 +768,11 @@ export function loadPluginMetadataSnapshot(
       },
     },
   );
-  const canMemo = canMemoizePluginMetadataSnapshotResult(result);
-  if (canMemo) {
-    perfMark("plugins.loadPluginMetadataSnapshot.store", {
-      key: memoKey.slice(0, 16),
-      registrySource: result.registrySource,
-    });
+  if (canMemoizePluginMetadataSnapshotResult(result)) {
     storePluginMetadataSnapshotMemo({
       key: memoKey,
       registryState,
       snapshot: clonePluginMetadataSnapshot(result.snapshot),
-    });
-  } else {
-    perfMark("plugins.loadPluginMetadataSnapshot.notMemoized", {
-      registrySource: result.registrySource,
     });
   }
   return result.snapshot;

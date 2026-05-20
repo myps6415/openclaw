@@ -1,7 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { perfMark } from "../infra/perf-trace.js";
 import { resolveUserPath } from "../utils.js";
 import { resolveBundledPluginsDir } from "./bundled-dir.js";
 import { getCurrentPluginMetadataSnapshot } from "./current-plugin-metadata-snapshot.js";
@@ -351,7 +350,6 @@ export function loadPluginRegistrySnapshotWithMetadata(
   params: LoadPluginRegistryParams = {},
 ): PluginRegistrySnapshotResult {
   if (params.index) {
-    perfMark("plugins.loadPluginRegistrySnapshot.gate", { outcome: "index-provided" });
     return {
       snapshot: params.index,
       source: "provided",
@@ -363,23 +361,16 @@ export function loadPluginRegistrySnapshotWithMetadata(
   if (memoKey !== undefined) {
     const cached = pluginRegistrySnapshotMemo.get(memoKey);
     if (cached) {
-      perfMark("plugins.loadPluginRegistrySnapshot.gate", {
-        outcome: "process-memo-hit",
-        key: memoKey.slice(0, 16),
-      });
       return cached.result;
     }
   }
-  const reuseGate = !canReuseCurrentPluginMetadataSnapshot(params) ? "params-block" : undefined;
   const current = loadCurrentPluginRegistrySnapshotResult(params);
   if (current) {
     if (memoKey !== undefined) {
       storePluginRegistrySnapshotMemo(memoKey, current);
     }
-    perfMark("plugins.loadPluginRegistrySnapshot.gate", { outcome: "current-hit" });
     return current;
   }
-  const currentMissReason = reuseGate ?? "current-missing-or-diagnostics";
 
   const env = params.env ?? process.env;
   const diagnostics: PluginRegistrySnapshotDiagnostic[] = [];
@@ -451,10 +442,6 @@ export function loadPluginRegistrySnapshotWithMetadata(
         if (memoKey !== undefined) {
           storePluginRegistrySnapshotMemo(memoKey, persistedResult);
         }
-        perfMark("plugins.loadPluginRegistrySnapshot.gate", {
-          outcome: "persisted-hit",
-          currentMiss: currentMissReason,
-        });
         return persistedResult;
       }
     } else if (persistedReadsEnabled) {
@@ -474,13 +461,6 @@ export function loadPluginRegistrySnapshotWithMetadata(
     });
   }
 
-  perfMark("plugins.loadPluginRegistrySnapshot.gate", {
-    outcome: "derived-fallback",
-    currentMiss: currentMissReason,
-    persistedReadsEnabled,
-    persistedIndexFound: !!persistedIndex,
-    diagnosticCodes: diagnostics.map((d) => d.code).join(","),
-  });
   const derivedResult: PluginRegistrySnapshotResult = {
     snapshot: loadInstalledPluginIndex({
       ...params,
