@@ -35,6 +35,7 @@ import {
   resolveExternalAuthProfileProviderPluginIds,
   resolveOwningPluginIdsForProvider,
 } from "./providers.js";
+import { ensurePluginMetadataSnapshot } from "./providers.runtime.js";
 import { getActivePluginRegistryWorkspaceDirFromState } from "./runtime-state.js";
 import { resolveRuntimeTextTransforms } from "./text-transforms.runtime.js";
 import type {
@@ -924,10 +925,12 @@ export function resolveExternalAuthProfilesWithPlugins(params: {
 }): ProviderExternalAuthProfile[] {
   const workspaceDir = params.workspaceDir ?? getActivePluginRegistryWorkspaceDirFromState();
   const env = params.env ?? process.env;
+  const { manifestRegistry } = ensurePluginMetadataSnapshot({ ...params, workspaceDir, env });
   const externalAuthPluginIds = resolveExternalAuthProfileProviderPluginIds({
     config: params.config,
     workspaceDir,
     env,
+    manifestRegistry,
   });
   const declaredPluginIds = new Set(externalAuthPluginIds);
   const fallbackPluginIds = resolveExternalAuthProfileCompatFallbackPluginIds({
@@ -935,6 +938,7 @@ export function resolveExternalAuthProfilesWithPlugins(params: {
     workspaceDir,
     env,
     declaredPluginIds,
+    manifestRegistry,
   });
   const pluginIds = [...new Set([...externalAuthPluginIds, ...fallbackPluginIds])].toSorted(
     (left, right) => left.localeCompare(right),

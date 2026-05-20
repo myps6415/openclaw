@@ -8,6 +8,7 @@ import {
   loadOpenClawPlugins,
   type PluginLoadOptions,
 } from "./loader.js";
+import { loadPluginMetadataSnapshot } from "./plugin-metadata-snapshot.js";
 import type { PluginMetadataRegistryView } from "./plugin-metadata-snapshot.types.js";
 import { hasExplicitPluginIdScope } from "./plugin-scope.js";
 import { resolveProviderConfigApiOwnerHint } from "./provider-config-owner.js";
@@ -30,6 +31,22 @@ import type { ProviderPlugin } from "./types.js";
 
 function dedupeSortedPluginIds(values: Iterable<string>): string[] {
   return [...new Set(values)].toSorted((left, right) => left.localeCompare(right));
+}
+
+export function ensurePluginMetadataSnapshot(params: {
+  config?: PluginLoadOptions["config"];
+  workspaceDir?: string;
+  env?: PluginLoadOptions["env"];
+  pluginMetadataSnapshot?: PluginMetadataRegistryView;
+}): PluginMetadataRegistryView {
+  if (params.pluginMetadataSnapshot) {
+    return params.pluginMetadataSnapshot;
+  }
+  return loadPluginMetadataSnapshot({
+    config: params.config ?? ({} as NonNullable<PluginLoadOptions["config"]>),
+    ...(params.workspaceDir !== undefined ? { workspaceDir: params.workspaceDir } : {}),
+    env: params.env ?? process.env,
+  });
 }
 
 function resolveExplicitProviderOwnerPluginIds(params: {
@@ -291,11 +308,15 @@ function resolveRuntimeProviderPluginLoadState(
 export function isPluginProvidersLoadInFlight(
   params: Parameters<typeof resolvePluginProviders>[0],
 ): boolean {
-  const base = resolvePluginProviderLoadBase(params);
+  const enrichedParams = {
+    ...params,
+    pluginMetadataSnapshot: ensurePluginMetadataSnapshot(params),
+  };
+  const base = resolvePluginProviderLoadBase(enrichedParams);
   const loadState =
-    params.mode === "setup"
-      ? resolveSetupProviderPluginLoadState(params, base)
-      : resolveRuntimeProviderPluginLoadState(params, base);
+    enrichedParams.mode === "setup"
+      ? resolveSetupProviderPluginLoadState(enrichedParams, base)
+      : resolveRuntimeProviderPluginLoadState(enrichedParams, base);
   if (!loadState) {
     return false;
   }
@@ -320,9 +341,13 @@ export function resolvePluginProviders(params: {
   includeUntrustedWorkspacePlugins?: boolean;
   pluginMetadataSnapshot?: PluginMetadataRegistryView;
 }): ProviderPlugin[] {
-  const base = resolvePluginProviderLoadBase(params);
-  if (params.mode === "setup") {
-    const loadState = resolveSetupProviderPluginLoadState(params, base);
+  const enrichedParams = {
+    ...params,
+    pluginMetadataSnapshot: ensurePluginMetadataSnapshot(params),
+  };
+  const base = resolvePluginProviderLoadBase(enrichedParams);
+  if (enrichedParams.mode === "setup") {
+    const loadState = resolveSetupProviderPluginLoadState(enrichedParams, base);
     if (!loadState) {
       return [];
     }
@@ -331,7 +356,7 @@ export function resolvePluginProviders(params: {
       Object.assign({}, entry.provider, { pluginId: entry.pluginId }),
     );
   }
-  const loadState = resolveRuntimeProviderPluginLoadState(params, base);
+  const loadState = resolveRuntimeProviderPluginLoadState(enrichedParams, base);
   const registry =
     loadState.loadOptions.onlyPluginIds?.length === 0
       ? undefined

@@ -10,11 +10,10 @@ import {
 } from "./manifest-owner-policy.js";
 import { loadPluginManifestRegistryForInstalledIndex } from "./manifest-registry-installed.js";
 import type { PluginManifestRecord, PluginManifestRegistry } from "./manifest-registry.js";
+import { loadPluginMetadataSnapshot } from "./plugin-metadata-snapshot.js";
 import {
   loadPluginRegistrySnapshot,
   normalizePluginsConfigWithRegistry,
-  resolvePluginContributionOwners,
-  resolveProviderOwners,
   type PluginRegistryRecord,
   type PluginRegistrySnapshot,
 } from "./plugin-registry.js";
@@ -505,43 +504,27 @@ export function resolveOwningPluginIdsForProvider(params: {
     return undefined;
   }
 
-  if (params.manifestRegistry) {
-    const pluginIds = params.manifestRegistry.plugins
-      .filter(
-        (plugin) =>
-          plugin.providers.some(
-            (providerId) => normalizeProviderId(providerId) === normalizedProvider,
-          ) ||
-          plugin.cliBackends.some(
-            (backendId) => normalizeProviderId(backendId) === normalizedProvider,
-          ),
-      )
-      .map((plugin) => plugin.id);
+  const manifestRegistry =
+    params.manifestRegistry ??
+    loadPluginMetadataSnapshot({
+      config: params.config ?? ({} as NonNullable<PluginLoadOptions["config"]>),
+      ...(params.workspaceDir !== undefined ? { workspaceDir: params.workspaceDir } : {}),
+      env: params.env ?? process.env,
+    }).manifestRegistry;
 
-    return pluginIds.length > 0 ? pluginIds : undefined;
-  }
+  const pluginIds = manifestRegistry.plugins
+    .filter(
+      (plugin) =>
+        plugin.providers.some(
+          (providerId) => normalizeProviderId(providerId) === normalizedProvider,
+        ) ||
+        plugin.cliBackends.some(
+          (backendId) => normalizeProviderId(backendId) === normalizedProvider,
+        ),
+    )
+    .map((plugin) => plugin.id);
 
-  const env = params.env ?? process.env;
-  const pluginIds = [
-    ...resolveProviderOwners({
-      config: params.config,
-      workspaceDir: params.workspaceDir,
-      env,
-      providerId: normalizedProvider,
-      includeDisabled: true,
-    }),
-    ...resolvePluginContributionOwners({
-      config: params.config,
-      workspaceDir: params.workspaceDir,
-      env,
-      contribution: "cliBackends",
-      matches: (backendId) => normalizeProviderId(backendId) === normalizedProvider,
-      includeDisabled: true,
-    }),
-  ];
-
-  const deduped = dedupeSortedPluginIds(pluginIds);
-  return deduped.length > 0 ? deduped : undefined;
+  return pluginIds.length > 0 ? pluginIds : undefined;
 }
 
 export function resolveOwningPluginIdsForModelRef(params: {
