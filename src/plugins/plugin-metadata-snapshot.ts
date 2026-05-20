@@ -757,30 +757,13 @@ export function loadPluginMetadataSnapshot(
   );
   const canMemo = canMemoizePluginMetadataSnapshotResult(result);
   if (canMemo) {
-    const cachedRegistryState =
-      result.registrySource === "derived"
-        ? resolvePersistedRegistryMemoState({
-            env,
-            index: result.snapshot.index,
-            ...(params.stateDir ? { stateDir: resolveUserPath(params.stateDir, env) } : {}),
-            ...(params.preferPersisted !== undefined
-              ? { preferPersisted: params.preferPersisted }
-              : {}),
-          })
-        : registryState;
-    const storedKey = computePluginMetadataSnapshotMemoKey({
-      params,
-      registryState: cachedRegistryState,
-    });
     perfMark("plugins.loadPluginMetadataSnapshot.store", {
-      lookupKey: memoKey.slice(0, 16),
-      storedKey: storedKey.slice(0, 16),
-      keyMismatch: storedKey !== memoKey,
+      key: memoKey.slice(0, 16),
       registrySource: result.registrySource,
     });
     pluginMetadataSnapshotMemo = {
-      key: storedKey,
-      registryState: cachedRegistryState,
+      key: memoKey,
+      registryState,
       snapshot: clonePluginMetadataSnapshot(result.snapshot),
     };
   } else {
