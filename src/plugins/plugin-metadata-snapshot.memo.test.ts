@@ -275,7 +275,7 @@ describe("loadPluginMetadataSnapshot process memo", () => {
     expect(loadPluginRegistrySnapshotWithMetadata).toHaveBeenCalledOnce();
   });
 
-  it("refreshes policy-stale derived snapshots when derived plugin files change", () => {
+  it("refreshes derived snapshots when the install index is rewritten", () => {
     const stateDir = tempStateDir();
     touchPersistedIndex(stateDir);
     const pluginDir = path.join(stateDir, "current", "derived");
@@ -295,11 +295,10 @@ describe("loadPluginMetadataSnapshot process memo", () => {
     loadPluginManifestRegistryForInstalledIndex.mockReturnValue(makeManifestRegistry("derived"));
 
     loadPluginMetadataSnapshot({ config: {}, env: {}, stateDir });
-    writeJson(manifestPath, { id: "derived", version: "2.0.0", commandAliases: [{ name: "new" }] });
+    touchPersistedIndex(stateDir, 2);
     loadPluginMetadataSnapshot({ config: {}, env: {}, stateDir });
 
     expect(loadPluginRegistrySnapshotWithMetadata).toHaveBeenCalledTimes(2);
-    expect(loadPluginManifestRegistryForInstalledIndex).toHaveBeenCalledTimes(2);
   });
 
   // Regression for Bug 3: previously the memo predicate gated derived

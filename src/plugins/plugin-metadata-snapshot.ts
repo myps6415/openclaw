@@ -779,36 +779,13 @@ export function loadPluginMetadataSnapshot(
   );
   const canMemo = canMemoizePluginMetadataSnapshotResult(result);
   if (canMemo) {
-    // For derived snapshots, rebuild the registryState using the freshly
-    // derived index so the stored state's watched-file fingerprints include
-    // the plugin manifests we just parsed. On the next call, the LRU fast-path
-    // re-stats those files; if any changed, the entry is rejected and we
-    // re-derive. (See findFastPathRegistryState for the lookup-side scan.)
-    // For persisted snapshots, the lookup-time state already reflects the
-    // persisted index, so we keep it as-is.
-    const storedRegistryState =
-      result.registrySource === "derived"
-        ? resolvePersistedRegistryMemoState({
-            env,
-            index: result.snapshot.index,
-            ...(params.stateDir ? { stateDir: resolveUserPath(params.stateDir, env) } : {}),
-            ...(params.preferPersisted !== undefined
-              ? { preferPersisted: params.preferPersisted }
-              : {}),
-          })
-        : registryState;
-    const storedKey = computePluginMetadataSnapshotMemoKey({
-      params,
-      registryState: storedRegistryState,
-    });
     perfMark("plugins.loadPluginMetadataSnapshot.store", {
-      key: storedKey.slice(0, 16),
-      lookupKey: memoKey.slice(0, 16),
+      key: memoKey.slice(0, 16),
       registrySource: result.registrySource,
     });
     storePluginMetadataSnapshotMemo({
-      key: storedKey,
-      registryState: storedRegistryState,
+      key: memoKey,
+      registryState,
       snapshot: clonePluginMetadataSnapshot(result.snapshot),
     });
   } else {
