@@ -28,6 +28,7 @@ import {
   type LoadInstalledPluginIndexParams,
   type RefreshInstalledPluginIndexParams,
 } from "./installed-plugin-index.js";
+import { clearPluginRegistrySnapshotMemo } from "./plugin-registry-snapshot.js";
 export {
   resolveInstalledPluginIndexStorePath,
   type InstalledPluginIndexStoreOptions,
@@ -187,6 +188,7 @@ export async function writePersistedInstalledPluginIndex(
     },
   );
   clearCurrentPluginMetadataSnapshotState();
+  clearPluginRegistrySnapshotMemo();
   return filePath;
 }
 
@@ -197,6 +199,7 @@ export function writePersistedInstalledPluginIndexSync(
   const filePath = resolveInstalledPluginIndexStorePath(options);
   saveJsonFile(filePath, { ...index, warning: INSTALLED_PLUGIN_INDEX_WARNING });
   clearCurrentPluginMetadataSnapshotState();
+  clearPluginRegistrySnapshotMemo();
   return filePath;
 }
 

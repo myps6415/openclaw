@@ -44,6 +44,7 @@ import {
   setCurrentPluginMetadataSnapshot,
 } from "../plugins/current-plugin-metadata-snapshot.js";
 import type { PluginHookGatewayCronService } from "../plugins/hook-types.js";
+import { clearPluginRegistrySnapshotMemo } from "../plugins/plugin-registry-snapshot.js";
 import {
   pinActivePluginChannelRegistry,
   pinActivePluginHttpRouteRegistry,
@@ -948,6 +949,7 @@ export async function startGatewayServer(
   const runClosePrelude = async () => {
     markClosePreludeStarted();
     clearCurrentPluginMetadataSnapshot();
+    clearPluginRegistrySnapshotMemo();
     const { runGatewayClosePrelude } = await loadGatewayCloseModule();
     await runGatewayClosePrelude({
       ...(diagnosticsEnabled ? { stopDiagnostics: stopDiagnosticHeartbeat } : {}),
