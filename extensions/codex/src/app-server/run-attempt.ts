@@ -953,6 +953,7 @@ export async function runCodexAppServerAttempt(
     sessionAgentId,
     pluginConfig,
     forceHeartbeatTool: true,
+    ignoreToolsAllow: true,
     onYieldDetected: () => {
       yieldDetected = true;
     },
@@ -3298,6 +3299,7 @@ type DynamicToolBuildParams = {
   sessionAgentId: string;
   pluginConfig: CodexPluginConfig;
   forceHeartbeatTool?: boolean;
+  ignoreToolsAllow?: boolean;
   onYieldDetected: () => void;
 };
 
@@ -3416,7 +3418,9 @@ async function buildDynamicTools(input: DynamicToolBuildParams) {
     modelHasVision,
     hasInboundImages: (params.images?.length ?? 0) > 0,
   });
-  const toolsAllow = includeForcedCodexDynamicToolAllow(params.toolsAllow, params, input);
+  const toolsAllow = input.ignoreToolsAllow
+    ? undefined
+    : includeForcedCodexDynamicToolAllow(params.toolsAllow, params, input);
   const filteredTools = filterCodexDynamicToolsForAllowlist(visionFilteredTools, toolsAllow);
   return normalizeAgentRuntimeTools({
     runtimePlan: params.runtimePlan,
