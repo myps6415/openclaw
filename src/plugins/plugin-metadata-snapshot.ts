@@ -730,8 +730,8 @@ export function loadPluginMetadataSnapshot(
   const env = params.env ?? process.env;
   const registryState = resolvePersistedRegistryMemoStateForLookup({
     env,
-    ...(params.stateDir ? { stateDir: resolveUserPath(params.stateDir, env) } : {}),
-    ...(params.preferPersisted !== undefined ? { preferPersisted: params.preferPersisted } : {}),
+    stateDir: params.stateDir ? resolveUserPath(params.stateDir, env) : undefined,
+    preferPersisted: params.preferPersisted,
   });
   const memoKey = computePluginMetadataSnapshotMemoKey({ params, registryState });
   const cached = pluginMetadataSnapshotMemo.get(memoKey);

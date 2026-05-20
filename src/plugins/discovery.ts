@@ -1231,16 +1231,6 @@ export function discoverOpenClawPlugins(params: {
   ownershipUid?: number | null;
   env?: NodeJS.ProcessEnv;
 }): PluginDiscoveryResult {
-  return discoverOpenClawPluginsInner(params);
-}
-
-function discoverOpenClawPluginsInner(params: {
-  workspaceDir?: string;
-  extraPaths?: string[];
-  installRecords?: Record<string, PluginInstallRecord>;
-  ownershipUid?: number | null;
-  env?: NodeJS.ProcessEnv;
-}): PluginDiscoveryResult {
   const env = params.env ?? process.env;
   const workspaceDir = normalizeOptionalString(params.workspaceDir);
   const workspaceRoot = workspaceDir ? resolveUserPath(workspaceDir, env) : undefined;

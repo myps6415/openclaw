@@ -34,22 +34,6 @@ function dedupeSortedPluginIds(values: Iterable<string>): string[] {
   return [...new Set(values)].toSorted((left, right) => left.localeCompare(right));
 }
 
-export function ensurePluginMetadataSnapshot(params: {
-  config?: PluginLoadOptions["config"];
-  workspaceDir?: string;
-  env?: PluginLoadOptions["env"];
-  pluginMetadataSnapshot?: PluginMetadataRegistryView;
-}): PluginMetadataRegistryView {
-  if (params.pluginMetadataSnapshot) {
-    return params.pluginMetadataSnapshot;
-  }
-  return loadPluginMetadataSnapshot({
-    config: params.config ?? ({} as NonNullable<PluginLoadOptions["config"]>),
-    ...(params.workspaceDir !== undefined ? { workspaceDir: params.workspaceDir } : {}),
-    env: params.env ?? process.env,
-  });
-}
-
 function resolveExplicitProviderOwnerPluginIds(params: {
   providerRefs: readonly string[];
   config?: PluginLoadOptions["config"];
@@ -331,7 +315,13 @@ export function isPluginProvidersLoadInFlight(
 ): boolean {
   const enrichedParams = {
     ...params,
-    pluginMetadataSnapshot: ensurePluginMetadataSnapshot(params),
+    pluginMetadataSnapshot:
+      params.pluginMetadataSnapshot ??
+      loadPluginMetadataSnapshot({
+        config: params.config ?? {},
+        workspaceDir: params.workspaceDir,
+        env: params.env ?? process.env,
+      }),
   };
   const base = resolvePluginProviderLoadBase(enrichedParams);
   const loadState =
@@ -364,7 +354,13 @@ export function resolvePluginProviders(params: {
 }): ProviderPlugin[] {
   const enrichedParams = {
     ...params,
-    pluginMetadataSnapshot: ensurePluginMetadataSnapshot(params),
+    pluginMetadataSnapshot:
+      params.pluginMetadataSnapshot ??
+      loadPluginMetadataSnapshot({
+        config: params.config ?? {},
+        workspaceDir: params.workspaceDir,
+        env: params.env ?? process.env,
+      }),
   };
   const base = resolvePluginProviderLoadBase(enrichedParams);
   if (enrichedParams.mode === "setup") {

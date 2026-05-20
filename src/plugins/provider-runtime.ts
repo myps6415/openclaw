@@ -12,6 +12,7 @@ import { createSubsystemLogger } from "../logging/subsystem.js";
 import { normalizeOptionalString } from "../shared/string-coerce.js";
 import { sanitizeForLog } from "../terminal/ansi.js";
 import { normalizeProviderModelIdWithManifest } from "./manifest-model-id-normalization.js";
+import { loadPluginMetadataSnapshot } from "./plugin-metadata-snapshot.js";
 import { resolvePluginDiscoveryProvidersRuntime } from "./provider-discovery.runtime.js";
 import {
   prepareProviderExtraParams,
@@ -35,7 +36,6 @@ import {
   resolveExternalAuthProfileProviderPluginIds,
   resolveOwningPluginIdsForProvider,
 } from "./providers.js";
-import { ensurePluginMetadataSnapshot } from "./providers.runtime.js";
 import { getActivePluginRegistryWorkspaceDirFromState } from "./runtime-state.js";
 import { resolveRuntimeTextTransforms } from "./text-transforms.runtime.js";
 import type {
@@ -925,7 +925,11 @@ export function resolveExternalAuthProfilesWithPlugins(params: {
 }): ProviderExternalAuthProfile[] {
   const workspaceDir = params.workspaceDir ?? getActivePluginRegistryWorkspaceDirFromState();
   const env = params.env ?? process.env;
-  const { manifestRegistry } = ensurePluginMetadataSnapshot({ ...params, workspaceDir, env });
+  const { manifestRegistry } = loadPluginMetadataSnapshot({
+    config: params.config ?? {},
+    workspaceDir,
+    env,
+  });
   const externalAuthPluginIds = resolveExternalAuthProfileProviderPluginIds({
     config: params.config,
     workspaceDir,

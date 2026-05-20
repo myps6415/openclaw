@@ -507,8 +507,8 @@ export function resolveOwningPluginIdsForProvider(params: {
   const manifestRegistry =
     params.manifestRegistry ??
     loadPluginMetadataSnapshot({
-      config: params.config ?? ({} as NonNullable<PluginLoadOptions["config"]>),
-      ...(params.workspaceDir !== undefined ? { workspaceDir: params.workspaceDir } : {}),
+      config: params.config ?? {},
+      workspaceDir: params.workspaceDir,
       env: params.env ?? process.env,
     }).manifestRegistry;
 

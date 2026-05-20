@@ -113,8 +113,8 @@ export function resolvePluginRuntimeLoadContext(
     workspaceDir,
     env,
     logger: options?.logger ?? createPluginRuntimeLoaderLogger(),
-    ...(manifestRegistry ? { manifestRegistry } : {}),
-    ...(installRecords ? { installRecords } : {}),
+    manifestRegistry,
+    installRecords,
   };
 }
 
@@ -136,8 +136,8 @@ export function buildPluginRuntimeLoadOptionsFromValues(
     workspaceDir: values.workspaceDir,
     env: values.env,
     logger: values.logger,
-    ...(values.manifestRegistry ? { manifestRegistry: values.manifestRegistry } : {}),
-    ...(values.installRecords ? { installRecords: values.installRecords } : {}),
+    manifestRegistry: values.manifestRegistry,
+    installRecords: values.installRecords,
     ...overrides,
   };
 }
