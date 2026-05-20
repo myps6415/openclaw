@@ -20,17 +20,24 @@ import { parseBashForCommandExplanation } from "./tree-sitter-runtime.js";
 import type {
   CommandContext,
   CommandExplanation,
+  CommandGroup,
+  CommandGroupKind,
+  CommandOperator,
+  CommandOperatorKind,
   CommandRisk,
   CommandShape,
   CommandStep,
   SourceSpan,
+  WrapperPayloadExplanation,
 } from "./types.js";
 
 type MutableExplanation = {
   shapes: Set<CommandShape>;
   commands: CommandStep[];
+  wrapperPayloads: WrapperPayloadExplanation[];
   risks: CommandRisk[];
   hasParseError: boolean;
+  nextCommandIndex: number;
 };
 
 type DynamicArgument = {
@@ -57,6 +64,7 @@ type CommandArgv = {
 type WalkState = {
   wrapperPayloadDepth: number;
   spanBase: SpanBase;
+  parentCommandId?: string;
 };
 
 const MAX_WRAPPER_PAYLOAD_DEPTH = 2;
@@ -72,6 +80,17 @@ type SpanBase = {
 const ROOT_SPAN_BASE: SpanBase = {
   startIndex: 0,
   startPosition: { row: 0, column: 0 },
+};
+
+type ResolvedTopology = {
+  groups: CommandGroup[];
+  operators: CommandOperator[];
+};
+
+type CommandTopologyBucket = {
+  context: CommandContext;
+  parentCommandId?: string;
+  commands: CommandStep[];
 };
 
 function children(node: TreeSitterNode): TreeSitterNode[] {
@@ -153,6 +172,38 @@ function advancePosition(
     column += 1;
   }
   return { row, column };
+}
+
+function positionAtSourceIndex(source: string, index: number): SourceSpan["startPosition"] {
+  return advancePosition(ROOT_SPAN_BASE.startPosition, source.slice(0, index));
+}
+
+function spanFromSourceRange(source: string, startIndex: number, endIndex: number): SourceSpan {
+  return {
+    startIndex,
+    endIndex,
+    startPosition: positionAtSourceIndex(source, startIndex),
+    endPosition: positionAtSourceIndex(source, endIndex),
+  };
+}
+
+function spanFromPayloadBase(payload: string, base: SpanBase): SourceSpan {
+  if (base.mapOffset) {
+    const start = base.mapOffset(0);
+    const end = base.mapOffset(payload.length);
+    return {
+      startIndex: start.index,
+      endIndex: end.index,
+      startPosition: start.position,
+      endPosition: end.position,
+    };
+  }
+  return {
+    startIndex: base.startIndex,
+    endIndex: base.startIndex + payload.length,
+    startPosition: base.startPosition,
+    endPosition: advancePosition(base.startPosition, payload),
+  };
 }
 
 function utf8ByteLengthForCodePoint(codePoint: number): number {
@@ -1072,7 +1123,9 @@ async function walk(
         span: spanFromNode(nameNode, state.spanBase),
       });
     } else if (parsed) {
+      const commandId = `command-${output.nextCommandIndex}`;
       const step: CommandStep = {
+        id: commandId,
         context,
         executable: parsed.argv[0] ?? "",
         argv: parsed.argv,
@@ -1083,7 +1136,11 @@ async function walk(
             ? spanFromNode(nameNode, state.spanBase)
             : (parsed.arguments[0]?.span ?? span),
       };
+      if (state.parentCommandId) {
+        step.parentCommandId = state.parentCommandId;
+      }
       if (step.executable) {
+        output.nextCommandIndex += 1;
         output.commands.push(step);
         recordCommandRisks(parsed.argv, parsed.dynamicArguments, node.text, span, output);
         const wrapperPayload = shellWrapperPayloadForParsing(
@@ -1092,6 +1149,15 @@ async function walk(
           parsed.dynamicArguments,
         );
         if (wrapperPayload && state.wrapperPayloadDepth < MAX_WRAPPER_PAYLOAD_DEPTH) {
+          const wrapperPayloadRecord: WrapperPayloadExplanation = {
+            parentCommandId: commandId,
+            payload: wrapperPayload.command,
+            span: spanFromPayloadBase(wrapperPayload.command, wrapperPayload.spanBase),
+            parseStatus: "parsed",
+            commandIds: [],
+          };
+          output.wrapperPayloads.push(wrapperPayloadRecord);
+          const firstPayloadCommandIndex = output.commands.length;
           const wrapperTree = await parseBashForCommandExplanation(wrapperPayload.command);
           const wrapperSpanBase = spanBaseForParserSource(
             wrapperPayload.command,
@@ -1101,6 +1167,7 @@ async function walk(
           try {
             if (wrapperTree.rootNode.hasError) {
               output.hasParseError = true;
+              wrapperPayloadRecord.parseStatus = "syntax-error";
               output.risks.push({
                 kind: "syntax-error",
                 text: wrapperPayload.command,
@@ -1110,7 +1177,13 @@ async function walk(
             await walk(wrapperTree.rootNode, output, "wrapper-payload", {
               wrapperPayloadDepth: state.wrapperPayloadDepth + 1,
               spanBase: wrapperSpanBase,
+              parentCommandId: commandId,
             });
+            wrapperPayloadRecord.commandIds = output.commands
+              .slice(firstPayloadCommandIndex)
+              .filter((command) => command.parentCommandId === commandId)
+              .map((command) => command.id)
+              .filter((id): id is string => id !== undefined);
           } finally {
             wrapperTree.delete();
           }
@@ -1123,6 +1196,144 @@ async function walk(
   }
 }
 
+function commandBucketKey(command: CommandStep): string {
+  return `${command.context}\0${command.parentCommandId ?? ""}`;
+}
+
+function commandTopologyBuckets(commands: CommandStep[]): CommandTopologyBucket[] {
+  const buckets = new Map<string, CommandTopologyBucket>();
+  for (const command of commands) {
+    if (!command.id) {
+      continue;
+    }
+    const key = commandBucketKey(command);
+    const bucket = buckets.get(key);
+    if (bucket) {
+      bucket.commands.push(command);
+      continue;
+    }
+    const newBucket: CommandTopologyBucket = {
+      context: command.context,
+      commands: [command],
+    };
+    if (command.parentCommandId) {
+      newBucket.parentCommandId = command.parentCommandId;
+    }
+    buckets.set(key, newBucket);
+  }
+  const sortedBuckets: CommandTopologyBucket[] = [];
+  for (const bucket of buckets.values()) {
+    const sortedBucket: CommandTopologyBucket = {
+      context: bucket.context,
+      commands: bucket.commands.toSorted(
+        (left, right) => left.span.startIndex - right.span.startIndex,
+      ),
+    };
+    if (bucket.parentCommandId) {
+      sortedBucket.parentCommandId = bucket.parentCommandId;
+    }
+    sortedBuckets.push(sortedBucket);
+  }
+  return sortedBuckets;
+}
+
+function topologyOperatorFromSeparator(
+  separator: string,
+): { kind: CommandOperatorKind; text: string; offset: number } | null {
+  const candidates: Array<{ kind: CommandOperatorKind; text: string }> = [
+    { kind: "and", text: "&&" },
+    { kind: "or", text: "||" },
+    { kind: "stderr-pipe", text: "|&" },
+    { kind: "pipe", text: "|" },
+    { kind: "sequence", text: ";" },
+    { kind: "background", text: "&" },
+    { kind: "newline-sequence", text: "\r\n" },
+    { kind: "newline-sequence", text: "\n" },
+    { kind: "newline-sequence", text: "\r" },
+  ];
+  let best: { kind: CommandOperatorKind; text: string; offset: number } | null = null;
+  for (const candidate of candidates) {
+    const offset = separator.indexOf(candidate.text);
+    if (offset < 0) {
+      continue;
+    }
+    if (!best || offset < best.offset) {
+      best = { ...candidate, offset };
+    }
+  }
+  return best;
+}
+
+function groupKindForOperators(operators: CommandOperator[]): CommandGroupKind {
+  return operators.every((operator) => operator.kind === "pipe" || operator.kind === "stderr-pipe")
+    ? "pipeline"
+    : "chain";
+}
+
+function resolveTopology(source: string, commands: CommandStep[]): ResolvedTopology {
+  const operators: CommandOperator[] = [];
+  const groups: CommandGroup[] = [];
+
+  for (const bucket of commandTopologyBuckets(commands)) {
+    const bucketOperators: CommandOperator[] = [];
+    for (let index = 0; index < bucket.commands.length - 1; index += 1) {
+      const fromCommand = bucket.commands[index];
+      const toCommand = bucket.commands[index + 1];
+      if (!fromCommand?.id || !toCommand?.id) {
+        continue;
+      }
+      const separatorStart = fromCommand.span.endIndex;
+      const separatorEnd = toCommand.span.startIndex;
+      if (separatorEnd < separatorStart) {
+        continue;
+      }
+      const separator = source.slice(separatorStart, separatorEnd);
+      const operator = topologyOperatorFromSeparator(separator);
+      if (!operator) {
+        continue;
+      }
+      const startIndex = separatorStart + operator.offset;
+      const topologyOperator: CommandOperator = {
+        id: `operator-${operators.length}`,
+        kind: operator.kind,
+        text: operator.text,
+        span: spanFromSourceRange(source, startIndex, startIndex + operator.text.length),
+        fromCommandId: fromCommand.id,
+        toCommandId: toCommand.id,
+      };
+      if (bucket.parentCommandId) {
+        topologyOperator.parentCommandId = bucket.parentCommandId;
+      }
+      operators.push(topologyOperator);
+      bucketOperators.push(topologyOperator);
+    }
+
+    if (bucket.commands.length > 1 && bucketOperators.length > 0) {
+      const firstCommand = bucket.commands[0];
+      const lastCommand = bucket.commands[bucket.commands.length - 1];
+      if (!firstCommand || !lastCommand) {
+        continue;
+      }
+      const group: CommandGroup = {
+        id: `group-${groups.length}`,
+        kind: groupKindForOperators(bucketOperators),
+        text: source.slice(firstCommand.span.startIndex, lastCommand.span.endIndex),
+        span: spanFromSourceRange(source, firstCommand.span.startIndex, lastCommand.span.endIndex),
+        commandIds: bucket.commands
+          .map((command) => command.id)
+          .filter((id): id is string => id !== undefined),
+        operatorIds: bucketOperators.map((operator) => operator.id),
+      };
+      if (bucket.parentCommandId) {
+        group.parentCommandId = bucket.parentCommandId;
+      }
+      groups.push(group);
+    }
+  }
+
+  return { groups, operators };
+}
+
 export async function explainShellCommand(source: string): Promise<CommandExplanation> {
   const tree = await parseBashForCommandExplanation(source);
   try {
@@ -1130,20 +1341,26 @@ export async function explainShellCommand(source: string): Promise<CommandExplan
     const output: MutableExplanation = {
       shapes: new Set(),
       commands: [],
+      wrapperPayloads: [],
       risks: [],
       hasParseError: tree.rootNode.hasError,
+      nextCommandIndex: 0,
     };
     await walk(tree.rootNode, output, "top-level", {
       wrapperPayloadDepth: 0,
       spanBase,
     });
     const topLevelCommands = output.commands.filter((command) => command.context === "top-level");
+    const topology = resolveTopology(source, output.commands);
     return {
       ok: !output.hasParseError,
       source,
       shapes: [...output.shapes],
       topLevelCommands,
       nestedCommands: output.commands.filter((command) => command.context !== "top-level"),
+      groups: topology.groups,
+      operators: topology.operators,
+      wrapperPayloads: output.wrapperPayloads,
       risks: output.risks,
     };
   } finally {

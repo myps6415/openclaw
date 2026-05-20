@@ -26,12 +26,55 @@ export type SourceSpan = {
 };
 
 export type CommandStep = {
+  id?: string;
+  parentCommandId?: string;
   context: CommandContext;
   executable: string;
   argv: string[];
   text: string;
   span: SourceSpan;
   executableSpan: SourceSpan;
+};
+
+export type CommandOperatorKind =
+  | "and"
+  | "or"
+  | "sequence"
+  | "newline-sequence"
+  | "pipe"
+  | "stderr-pipe"
+  | "background";
+
+export type CommandGroupKind = "pipeline" | "chain";
+
+export type CommandOperator = {
+  id: string;
+  kind: CommandOperatorKind;
+  text: string;
+  span: SourceSpan;
+  fromCommandId: string;
+  toCommandId: string;
+  parentCommandId?: string;
+};
+
+export type CommandGroup = {
+  id: string;
+  kind: CommandGroupKind;
+  text: string;
+  span: SourceSpan;
+  commandIds: string[];
+  operatorIds: string[];
+  parentCommandId?: string;
+};
+
+export type WrapperPayloadParseStatus = "parsed" | "syntax-error";
+
+export type WrapperPayloadExplanation = {
+  parentCommandId: string;
+  payload: string;
+  span: SourceSpan;
+  parseStatus: WrapperPayloadParseStatus;
+  commandIds: string[];
 };
 
 export type CommandRisk =
@@ -72,5 +115,8 @@ export type CommandExplanation = {
   shapes: CommandShape[];
   topLevelCommands: CommandStep[];
   nestedCommands: CommandStep[];
+  groups?: CommandGroup[];
+  operators?: CommandOperator[];
+  wrapperPayloads?: WrapperPayloadExplanation[];
   risks: CommandRisk[];
 };

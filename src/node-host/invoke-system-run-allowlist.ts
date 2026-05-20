@@ -1,6 +1,5 @@
 import {
   analyzeArgvCommand,
-  buildSafeBinsShellCommand,
   evaluateExecAllowlist,
   evaluateShellAllowlist,
   resolvePlannedSegmentArgv,
@@ -11,6 +10,7 @@ import {
   type ExecSecurity,
   type SkillBinTrustEntry,
 } from "../infra/exec-approvals.js";
+import { buildAuthorizedShellCommandFromPlan } from "../infra/exec-authorization-render.js";
 import { resolveExecSafeBinRuntimePolicy } from "../infra/exec-safe-bin-runtime-policy.js";
 import {
   normalizeExecutableToken,
@@ -135,6 +135,7 @@ export function resolveSystemRunExecArgv(params: {
   shellCommand: string | null;
   segments: ExecCommandSegment[];
   segmentSatisfiedBy: ExecSegmentSatisfiedBy[];
+  authorizationPlan?: import("../infra/exec-approvals.js").ExecAuthorizationPlan;
   cwd: string | undefined;
   env: Record<string, string> | undefined;
 }): string[] | null {
@@ -161,13 +162,13 @@ export function resolveSystemRunExecArgv(params: {
     params.segmentSatisfiedBy.some((entry) => entry === "safeBins" || entry === "inlineChain") &&
     isPosixShellInlineCommandTransport(params.argv)
   ) {
-    const rebuilt = buildSafeBinsShellCommand({
-      command: params.shellCommand,
-      segments: params.segments,
+    if (!params.authorizationPlan) {
+      return null;
+    }
+    const rebuilt = buildAuthorizedShellCommandFromPlan({
+      plan: params.authorizationPlan,
+      mode: "safeBins",
       segmentSatisfiedBy: params.segmentSatisfiedBy,
-      cwd: params.cwd,
-      env: params.env,
-      platform: process.platform,
     });
     if (!rebuilt.ok || !rebuilt.command) {
       return null;

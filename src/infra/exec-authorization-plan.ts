@@ -1,5 +1,10 @@
 import { explainShellCommand } from "./command-explainer/extract.js";
-import type { CommandExplanation, CommandRisk, CommandStep } from "./command-explainer/types.js";
+import type {
+  CommandExplanation,
+  CommandOperator,
+  CommandRisk,
+  CommandStep,
+} from "./command-explainer/types.js";
 import { isDispatchWrapperExecutable } from "./dispatch-wrapper-resolution.js";
 import {
   type ExecCommandAnalysis,
@@ -45,6 +50,7 @@ export type ExecAuthorizationTrustMode = "executable" | "exact-command" | "promp
 export type ExecAuthorizationCandidate = {
   argv: string[];
   sourceSegment: ExecCommandSegment;
+  sourceStep: CommandStep;
   relationship: ExecAuthorizationRelationship;
   transport: ExecAuthorizationTransport;
   trustMode: ExecAuthorizationTrustMode;
@@ -66,6 +72,7 @@ export type ExecAuthorizationPlan =
       originalCommand: string;
       groups: ExecAuthorizationGroup[];
       executionSegments: ExecCommandSegment[];
+      operators: CommandOperator[];
       risks: CommandRisk[];
     }
   | {
@@ -75,6 +82,7 @@ export type ExecAuthorizationPlan =
       reason: string;
       groups: [];
       executionSegments: [];
+      operators: [];
       risks: CommandRisk[];
     };
 
@@ -152,25 +160,26 @@ function relationshipForOperator(
   return "simple";
 }
 
-function operatorBetween(
-  source: string,
-  previous: CommandStep,
-  next: CommandStep,
-): ShellChainOperator | "|" | null {
-  const between = source.slice(previous.span.endIndex, next.span.startIndex);
-  if (between.includes("&&")) {
-    return "&&";
+type AuthorizationOperator = ShellChainOperator | "pipe";
+
+function authorizationOperatorForTopology(operator: CommandOperator): AuthorizationOperator {
+  switch (operator.kind) {
+    case "and":
+      return "&&";
+    case "or":
+      return "||";
+    case "pipe":
+    case "stderr-pipe":
+      return "pipe";
+    case "sequence":
+    case "newline-sequence":
+    case "background":
+      return ";";
+    default: {
+      const unreachable: never = operator.kind;
+      return unreachable;
+    }
   }
-  if (between.includes("||")) {
-    return "||";
-  }
-  if (between.includes("|")) {
-    return "|";
-  }
-  if (between.includes(";") || /[\r\n]/.test(between)) {
-    return ";";
-  }
-  return null;
 }
 
 function riskInsideStep(risk: CommandRisk, step: CommandStep): boolean {
@@ -332,6 +341,7 @@ function createCandidate(params: {
   return {
     argv: params.segment.argv,
     sourceSegment: params.segment,
+    sourceStep: params.step,
     relationship: params.relationship,
     transport: params.transport,
     trustMode,
@@ -370,8 +380,8 @@ function finalizeGroup(params: {
 }
 
 function groupsFromSteps(params: {
-  source: string;
   steps: CommandStepWithSegment[];
+  operators?: readonly CommandOperator[];
   transport: ExecAuthorizationTransport;
   risks: readonly CommandRisk[];
 }): ExecAuthorizationGroup[] {
@@ -381,6 +391,23 @@ function groupsFromSteps(params: {
   const groups: ExecAuthorizationGroup[] = [];
   let current: CommandStepWithSegment[] = [];
   let opFromPrevious: ShellChainOperator | null = null;
+  const operatorByFromCommandId = new Map<string, AuthorizationOperator>();
+  for (const operator of params.operators ?? []) {
+    operatorByFromCommandId.set(operator.fromCommandId, authorizationOperatorForTopology(operator));
+  }
+
+  if (sorted.length > 1 && operatorByFromCommandId.size === 0) {
+    return [
+      finalizeGroup({
+        steps: sorted,
+        relationship: "pipeline",
+        opFromPrevious: null,
+        opToNext: null,
+        transport: params.transport,
+        risks: params.risks,
+      }),
+    ];
+  }
 
   for (const entry of sorted) {
     if (current.length === 0) {
@@ -392,8 +419,9 @@ function groupsFromSteps(params: {
       current = [entry];
       continue;
     }
-    const operator = operatorBetween(params.source, previous.step, entry.step);
-    if (operator === "|") {
+    const previousCommandId = previous.step.id;
+    const operator = previousCommandId ? operatorByFromCommandId.get(previousCommandId) : undefined;
+    if (operator === "pipe") {
       current.push(entry);
       continue;
     }
@@ -440,6 +468,7 @@ function shellWrapperRiskForStep(
 }
 
 function shouldUseWrapperPayload(params: {
+  wrapperCommandId?: string;
   topLevelSteps: readonly CommandStepWithSegment[];
   nestedSteps: readonly CommandStepWithSegment[];
   risks: readonly CommandRisk[];
@@ -451,15 +480,20 @@ function shouldUseWrapperPayload(params: {
   if (!wrapperStep || !shellWrapperRiskForStep(wrapperStep, params.risks)) {
     return false;
   }
-  return canUseReusableWrapperPayloadCandidates(params.nestedSteps.map((entry) => entry.segment));
+  const nestedStepsForWrapper = params.wrapperCommandId
+    ? params.nestedSteps.filter((entry) => entry.step.parentCommandId === params.wrapperCommandId)
+    : params.nestedSteps;
+  return canUseReusableWrapperPayloadCandidates(
+    nestedStepsForWrapper.map((entry) => entry.segment),
+  );
 }
 
 function wrapperPayloadPlan(params: {
-  source: string;
   context: PlanningContext;
   allowNestedPayload: boolean;
   topLevelSteps: CommandStepWithSegment[];
   nestedSteps: CommandStepWithSegment[];
+  operators: readonly CommandOperator[];
   risks: readonly CommandRisk[];
 }): WrapperPayloadPlan | null {
   const wrapper = params.topLevelSteps[0];
@@ -482,7 +516,6 @@ function wrapperPayloadPlan(params: {
       inlineCommand: wrapperRisk.payload,
     };
     const groups = groupsFromSteps({
-      source: params.source,
       steps: carriedSteps,
       transport,
       risks: params.risks,
@@ -494,6 +527,7 @@ function wrapperPayloadPlan(params: {
   }
   if (
     !shouldUseWrapperPayload({
+      wrapperCommandId: wrapper.step.id,
       topLevelSteps: params.topLevelSteps,
       nestedSteps: params.nestedSteps,
       risks: params.risks,
@@ -507,9 +541,15 @@ function wrapperPayloadPlan(params: {
     wrapperArgv: wrapper.segment.argv,
     inlineCommand: wrapperRisk.payload,
   };
+  const nestedStepsForWrapper = wrapper.step.id
+    ? params.nestedSteps.filter((entry) => entry.step.parentCommandId === wrapper.step.id)
+    : params.nestedSteps;
+  const operatorsForWrapper = wrapper.step.id
+    ? params.operators.filter((operator) => operator.parentCommandId === wrapper.step.id)
+    : params.operators;
   const groups = groupsFromSteps({
-    source: params.source,
-    steps: params.nestedSteps,
+    steps: nestedStepsForWrapper,
+    operators: operatorsForWrapper,
     transport,
     risks: params.risks,
   });
@@ -540,6 +580,7 @@ function unanalyzablePlan(params: {
     reason: params.reason,
     groups: [],
     executionSegments: [],
+    operators: [],
     risks: params.risks ?? [],
   };
 }
@@ -576,18 +617,20 @@ function planFromExplanation(params: {
   }
 
   const payloadPlan = wrapperPayloadPlan({
-    source: params.command,
     context: params.context,
     allowNestedPayload: !blockingRisk,
     topLevelSteps,
     nestedSteps,
+    operators: params.explanation.operators ?? [],
     risks: params.explanation.risks,
   });
   const groups =
     payloadPlan?.groups ??
     groupsFromSteps({
-      source: params.command,
       steps: topLevelSteps,
+      operators: (params.explanation.operators ?? []).filter(
+        (operator) => operator.parentCommandId === undefined,
+      ),
       transport: { kind: "direct" },
       risks: params.explanation.risks,
     });
@@ -605,6 +648,7 @@ function planFromExplanation(params: {
     originalCommand: params.command,
     groups,
     executionSegments: topLevelSteps.map((entry) => entry.segment),
+    operators: params.explanation.operators ?? [],
     risks: params.explanation.risks,
   };
 }
@@ -704,6 +748,7 @@ export async function planExecAuthorization(params: {
             originalCommand: command,
             groups,
             executionSegments: [wrapperSegment],
+            operators: shellPlan.operators,
             risks: shellPlan.risks,
           };
         }
@@ -740,7 +785,6 @@ export async function planExecAuthorization(params: {
         : segment,
   }));
   const groups = groupsFromSteps({
-    source: command,
     steps,
     transport: { kind: "direct" },
     risks: [],
@@ -751,6 +795,7 @@ export async function planExecAuthorization(params: {
     originalCommand: command,
     groups,
     executionSegments: params.analysis.segments,
+    operators: [],
     risks: [],
   };
 }

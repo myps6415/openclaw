@@ -1,13 +1,12 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { describeInterpreterInlineEval } from "../infra/command-analysis/inline-eval.js";
 import { detectPolicyInlineEval } from "../infra/command-analysis/policy.js";
+import { explainShellCommand } from "../infra/command-explainer/extract.js";
 import {
   addDurableCommandApproval,
-  analyzeShellCommand,
   type ExecAsk,
   resolveExecApprovalAllowedDecisions,
   type ExecSecurity,
-  buildEnforcedShellCommand,
   evaluateShellAllowlist,
   hasDurableExecApproval,
   persistAllowAlwaysPatterns,
@@ -15,6 +14,7 @@ import {
   resolveApprovalAuditTrustPath,
   requiresExecApproval,
 } from "../infra/exec-approvals.js";
+import { buildAuthorizedShellCommandFromPlan } from "../infra/exec-authorization-render.js";
 import type { SafeBinProfile } from "../infra/exec-safe-bin-policy.js";
 import { markBackgrounded, tail } from "./bash-process-registry.js";
 import {
@@ -159,12 +159,27 @@ function removeParsedSegmentText(command: string, segments: Array<{ raw?: string
   return remaining;
 }
 
-function commandRequiresSecurityAuditSuppressionApproval(params: {
+async function explainShellSegmentsForPolicy(params: {
   command: string;
-  cwd?: string;
-  env?: NodeJS.ProcessEnv;
+}): Promise<Array<{ argv: string[]; raw?: string }> | null> {
+  try {
+    const explanation = await explainShellCommand(params.command);
+    if (!explanation.ok) {
+      return null;
+    }
+    return [...explanation.topLevelCommands, ...explanation.nestedCommands].map((step) => ({
+      argv: step.argv,
+      raw: step.text,
+    }));
+  } catch {
+    return null;
+  }
+}
+
+async function commandRequiresSecurityAuditSuppressionApproval(params: {
+  command: string;
   segments: Array<{ argv: string[]; raw?: string }>;
-}): boolean {
+}): Promise<boolean> {
   let sawSegmentMention = false;
   for (const segment of params.segments) {
     const segmentText = `${segment.raw ?? ""} ${segment.argv.join(" ")}`;
@@ -177,16 +192,13 @@ function commandRequiresSecurityAuditSuppressionApproval(params: {
     }
   }
   if (sawSegmentMention) {
-    const rawAnalysis = analyzeShellCommand({
+    const rawSegments = await explainShellSegmentsForPolicy({
       command: params.command,
-      cwd: params.cwd,
-      env: params.env,
-      platform: process.platform,
     });
-    if (!rawAnalysis.ok) {
+    if (!rawSegments) {
       return textMentionsSecurityAuditSuppressions(params.command);
     }
-    for (const segment of rawAnalysis.segments) {
+    for (const segment of rawSegments) {
       if (
         textMentionsSecurityAuditSuppressions(`${segment.raw} ${segment.argv.join(" ")}`) &&
         !isReadOnlySecurityAuditSuppressionInspection(segment.argv)
@@ -195,9 +207,7 @@ function commandRequiresSecurityAuditSuppressionApproval(params: {
       }
     }
     if (
-      textMentionsSecurityAuditSuppressions(
-        removeParsedSegmentText(params.command, rawAnalysis.segments),
-      )
+      textMentionsSecurityAuditSuppressions(removeParsedSegmentText(params.command, rawSegments))
     ) {
       return true;
     }
@@ -410,13 +420,17 @@ export async function processGatewayAllowlist(
   let enforcedCommand: string | undefined;
   let allowlistPlanUnavailableReason: string | null = null;
   if (hostSecurity === "allowlist" && analysisOk && allowlistSatisfied) {
-    const enforced = buildEnforcedShellCommand({
-      command: params.command,
-      segments: allowlistEval.segments,
-      platform: process.platform,
-    });
-    if (!enforced.ok || !enforced.command) {
-      allowlistPlanUnavailableReason = enforced.reason ?? "unsupported platform";
+    const enforced = allowlistEval.authorizationPlan
+      ? buildAuthorizedShellCommandFromPlan({
+          plan: allowlistEval.authorizationPlan,
+          mode: "enforced",
+          segmentSatisfiedBy: allowlistEval.segmentSatisfiedBy,
+        })
+      : { ok: false as const, reason: "authorization plan unavailable" };
+    if (!enforced.ok) {
+      allowlistPlanUnavailableReason = enforced.reason;
+    } else if (!enforced.command) {
+      allowlistPlanUnavailableReason = "unsupported platform";
     } else {
       enforcedCommand = enforced.command;
     }
@@ -442,12 +456,10 @@ export async function processGatewayAllowlist(
     !enforcedCommand &&
     allowlistPlanUnavailableReason !== null;
   const requiresSecurityAuditSuppressionApproval =
-    commandRequiresSecurityAuditSuppressionApproval({
+    (await commandRequiresSecurityAuditSuppressionApproval({
       command: params.command,
-      cwd: params.workdir,
-      env: params.env,
       segments: allowlistEval.segments,
-    }) && !(hostSecurity === "full" && hostAsk === "off");
+    })) && !(hostSecurity === "full" && hostAsk === "off");
   const requiresAsk =
     requiresExecApproval({
       ask: hostAsk,

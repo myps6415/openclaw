@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { analyzeArgvCommand } from "./exec-approvals-analysis.js";
 import { planExecAuthorization, planShellAuthorization } from "./exec-authorization-plan.js";
+import { buildAuthorizedShellCommandFromPlan } from "./exec-authorization-render.js";
 
 describe("exec authorization planner", () => {
   it("plans direct shell commands as direct candidates", async () => {
@@ -56,6 +57,18 @@ describe("exec authorization planner", () => {
         ok: false,
         dialect: "posix-shell",
         reason: "dynamic-executable",
+      }),
+    );
+  });
+
+  it("treats heredocs as unanalyzable shell topology", async () => {
+    const plan = await planShellAuthorization({ command: "cat <<EOF\nhello\nEOF" });
+
+    expect(plan).toEqual(
+      expect.objectContaining({
+        ok: false,
+        dialect: "posix-shell",
+        reason: "heredoc",
       }),
     );
   });
@@ -310,5 +323,45 @@ describe("exec authorization planner", () => {
         reason: "non-POSIX command wrapper",
       }),
     );
+  });
+
+  it("renders safe-bin replacements from authorization plan topology", async () => {
+    const plan = await planShellAuthorization({
+      command: "rg foo src/*.ts | head -n 5 && echo ok",
+    });
+
+    const rendered = buildAuthorizedShellCommandFromPlan({
+      plan,
+      mode: "safeBins",
+      segmentSatisfiedBy: [null, "safeBins", null],
+    });
+
+    expect(rendered).toEqual(expect.objectContaining({ ok: true }));
+    if (!rendered.ok) {
+      throw new Error(rendered.reason);
+    }
+    expect(rendered.command).toContain("rg foo src/*.ts");
+    expect(rendered.command).toContain("|");
+    expect(rendered.command).toContain("&&");
+    expect(rendered.command).toMatch(/'head' '-n' '5'|'[^']+\/head' '-n' '5'/);
+  });
+
+  it("renders shell-wrapper payloads by replacing the wrapper inline command", async () => {
+    const plan = await planShellAuthorization({ command: "sh -c 'git status && head -c 16'" });
+
+    const rendered = buildAuthorizedShellCommandFromPlan({
+      plan,
+      mode: "safeBins",
+      segmentSatisfiedBy: ["inlineChain"],
+    });
+
+    expect(rendered).toEqual(expect.objectContaining({ ok: true }));
+    if (!rendered.ok) {
+      throw new Error(rendered.reason);
+    }
+    expect(rendered.command).toContain("'sh'");
+    expect(rendered.command).toContain("'-c'");
+    expect(rendered.command).not.toContain("git status && head -c 16");
+    expect(rendered.command).toContain("head");
   });
 });

@@ -149,6 +149,10 @@ function expectRisk(
   return risk;
 }
 
+function spanText(source: string, span: { startIndex: number; endIndex: number }): string {
+  return source.slice(span.startIndex, span.endIndex);
+}
+
 afterEach(() => {
   if (parserLoaderOverridden) {
     setBashParserLoaderForCommandExplanationForTest();
@@ -317,6 +321,122 @@ describe("command explainer tree-sitter runtime", () => {
       "pnpm",
       "echo",
       "pwd",
+    ]);
+  });
+
+  it("emits stable command topology metadata for operators, groups, and shell wrapper payloads", async () => {
+    const chained = await explainShellCommand("git status && npm test; pwd");
+    expect(chained.topLevelCommands.map((step) => step.id)).toEqual([
+      "command-0",
+      "command-1",
+      "command-2",
+    ]);
+    const chainedGroups = chained.groups ?? [];
+    const chainedOperators = chained.operators ?? [];
+    expect(chainedGroups).toEqual([
+      expect.objectContaining({
+        id: "group-0",
+        kind: "chain",
+        commandIds: ["command-0", "command-1", "command-2"],
+        operatorIds: ["operator-0", "operator-1"],
+      }),
+    ]);
+    expect(
+      chainedOperators.map((operator) => ({
+        id: operator.id,
+        kind: operator.kind,
+        text: operator.text,
+        fromCommandId: operator.fromCommandId,
+        toCommandId: operator.toCommandId,
+        spanText: spanText(chained.source, operator.span),
+      })),
+    ).toEqual([
+      {
+        id: "operator-0",
+        kind: "and",
+        text: "&&",
+        fromCommandId: "command-0",
+        toCommandId: "command-1",
+        spanText: "&&",
+      },
+      {
+        id: "operator-1",
+        kind: "sequence",
+        text: ";",
+        fromCommandId: "command-1",
+        toCommandId: "command-2",
+        spanText: ";",
+      },
+    ]);
+
+    const pipe = await explainShellCommand("git diff | cat");
+    const pipeOperators = pipe.operators ?? [];
+    expect(pipe.topLevelCommands.map((step) => step.id)).toEqual(["command-0", "command-1"]);
+    expect(pipeOperators).toHaveLength(1);
+    expect(pipeOperators[0]).toMatchObject({
+      id: "operator-0",
+      kind: "pipe",
+      text: "|",
+      fromCommandId: "command-0",
+      toCommandId: "command-1",
+    });
+    expect(spanText(pipe.source, pipeOperators[0]?.span ?? { startIndex: 0, endIndex: 0 })).toBe(
+      "|",
+    );
+
+    const stderrPipe = await explainShellCommand("grep x file |& cat");
+    const stderrPipeOperators = stderrPipe.operators ?? [];
+    expect(stderrPipe.topLevelCommands.map((step) => step.id)).toEqual(["command-0", "command-1"]);
+    expect(stderrPipeOperators).toHaveLength(1);
+    expect(stderrPipeOperators[0]).toMatchObject({
+      kind: "stderr-pipe",
+      text: "|&",
+      fromCommandId: "command-0",
+      toCommandId: "command-1",
+    });
+    expect(
+      spanText(stderrPipe.source, stderrPipeOperators[0]?.span ?? { startIndex: 0, endIndex: 0 }),
+    ).toBe("|&");
+
+    const newline = await explainShellCommand("echo a\npwd");
+    const newlineOperators = newline.operators ?? [];
+    expect(newline.topLevelCommands.map((step) => step.id)).toEqual(["command-0", "command-1"]);
+    expect(newlineOperators).toHaveLength(1);
+    expect(newlineOperators[0]).toMatchObject({
+      kind: "newline-sequence",
+      text: "\n",
+      fromCommandId: "command-0",
+      toCommandId: "command-1",
+    });
+    expect(
+      spanText(newline.source, newlineOperators[0]?.span ?? { startIndex: 0, endIndex: 0 }),
+    ).toBe("\n");
+
+    const wrapper = await explainShellCommand("sh -c 'git status && npm test'");
+    const wrapperOperators = wrapper.operators ?? [];
+    const wrapperPayloads = wrapper.wrapperPayloads ?? [];
+    expect(wrapper.topLevelCommands.map((step) => step.id)).toEqual(["command-0"]);
+    expect(wrapper.nestedCommands.map((step) => [step.id, step.parentCommandId])).toEqual([
+      ["command-1", "command-0"],
+      ["command-2", "command-0"],
+    ]);
+    expect(wrapperPayloads).toEqual([
+      expect.objectContaining({
+        parentCommandId: "command-0",
+        payload: "git status && npm test",
+        parseStatus: "parsed",
+        commandIds: ["command-1", "command-2"],
+      }),
+    ]);
+    expect(wrapperOperators).toEqual([
+      expect.objectContaining({
+        id: "operator-0",
+        kind: "and",
+        text: "&&",
+        fromCommandId: "command-1",
+        toCommandId: "command-2",
+        parentCommandId: "command-0",
+      }),
     ]);
   });
 

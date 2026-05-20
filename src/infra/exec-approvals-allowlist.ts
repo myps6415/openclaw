@@ -22,8 +22,6 @@ import {
   resolvePolicyTargetCandidatePath,
   resolvePolicyTargetResolution,
   resolvePolicyTargetTrustPath,
-  splitCommandChain,
-  splitCommandChainWithOperators,
   type ExecCommandAnalysis,
   type ExecCommandSegment,
   type ExecutableResolution,
@@ -670,58 +668,13 @@ function resolveInlineCommandFallback(params: {
     return null;
   }
   if (!isWindowsPlatform(params.context.platform)) {
-    if (hasShellLineContinuation(params.inlineCommand)) {
-      return null;
-    }
-    const inlineChainParts = splitCommandChain(params.inlineCommand);
-    if (!inlineChainParts || inlineChainParts.length <= 1) {
-      return null;
-    }
-    return evaluateShellWrapperInlineCommands({
-      inlineCommands: inlineChainParts,
-      context: params.context,
-      inlineDepth: params.inlineDepth + 1,
-    });
+    return null;
   }
   return evaluateShellWrapperInlineCommand({
     inlineCommand: params.inlineCommand,
     context: params.context,
     inlineDepth: params.inlineDepth + 1,
   });
-}
-
-function evaluateShellWrapperInlineCommands(params: {
-  inlineCommands: string[];
-  context: ExecAllowlistContext;
-  inlineDepth: number;
-}): InlineChainAllowlistEvaluation | null {
-  if (params.inlineDepth >= MAX_SHELL_WRAPPER_INLINE_EVAL_DEPTH) {
-    return null;
-  }
-
-  const matches: ExecAllowlistEntry[] = [];
-  const segmentSatisfiedBy: ExecSegmentSatisfiedBy[] = [];
-  for (const inlineCommand of params.inlineCommands) {
-    const analysis = analyzeShellCommand({
-      command: inlineCommand,
-      cwd: params.context.cwd,
-      env: params.context.env,
-      platform: params.context.platform,
-    });
-    if (!analysis.ok) {
-      return null;
-    }
-    const result = evaluateSegments(analysis.segments, params.context, params.inlineDepth);
-    if (!result.satisfied) {
-      return null;
-    }
-    matches.push(...result.matches);
-    segmentSatisfiedBy.push(...result.segmentSatisfiedBy);
-  }
-  const hasLiteralizedInnerSegment = segmentSatisfiedBy.some(
-    (entry) => entry === "safeBins" || entry === "inlineChain",
-  );
-  return { matches, satisfiedBy: hasLiteralizedInnerSegment ? "inlineChain" : "allowlist" };
 }
 
 function evaluateShellWrapperInlineCommand(params: {
@@ -1536,6 +1489,9 @@ function collectAllowAlwaysPatterns(params: {
     }
     return;
   }
+  if (!isWindowsPlatform(params.platform)) {
+    return;
+  }
   const nested = analyzeShellCommand({
     command: inlineCommand,
     cwd: params.cwd,
@@ -1660,54 +1616,22 @@ export async function evaluateShellAllowlist(
     return evaluateAuthorizationPlan({ plan, context: allowlistContext });
   }
 
-  const chainParts = isWindowsPlatform(params.platform)
-    ? null
-    : splitCommandChainWithOperators(params.command);
-  if (!chainParts) {
-    const analysis = analyzeShellCommand({
-      command: params.command,
-      cwd: params.cwd,
-      env: params.env,
-      platform: params.platform,
-    });
-    if (!analysis.ok) {
-      return analysisFailure();
-    }
-    const evaluation = await evaluateExecAllowlist({ analysis, ...allowlistContext });
-    return {
-      analysisOk: true,
-      allowlistSatisfied: evaluation.allowlistSatisfied,
-      allowlistMatches: evaluation.allowlistMatches,
-      segments: evaluation.segments ?? analysis.segments,
-      segmentAllowlistEntries: evaluation.segmentAllowlistEntries,
-      segmentSatisfiedBy: evaluation.segmentSatisfiedBy,
-    };
-  }
-
-  const chainEvaluations: Array<PlanGroupEvaluation | null> = [];
-  for (const { part, opToNext } of chainParts) {
-    const analysis = analyzeShellCommand({
-      command: part,
-      cwd: params.cwd,
-      env: params.env,
-      platform: params.platform,
-    });
-    if (!analysis.ok) {
-      chainEvaluations.push(null);
-      continue;
-    }
-    chainEvaluations.push({
-      analysis,
-      evaluation: await evaluateExecAllowlist({ analysis, ...allowlistContext }),
-      opToNext,
-    });
-  }
-  if (chainEvaluations.some((entry) => entry === null)) {
+  const analysis = analyzeShellCommand({
+    command: params.command,
+    cwd: params.cwd,
+    env: params.env,
+    platform: params.platform,
+  });
+  if (!analysis.ok) {
     return analysisFailure();
   }
-
-  return finalizeShellAllowlistEvaluations({
-    evaluations: chainEvaluations.filter((entry): entry is PlanGroupEvaluation => entry !== null),
-    cwd: params.cwd,
-  });
+  const evaluation = await evaluateExecAllowlist({ analysis, ...allowlistContext });
+  return {
+    analysisOk: true,
+    allowlistSatisfied: evaluation.allowlistSatisfied,
+    allowlistMatches: evaluation.allowlistMatches,
+    segments: evaluation.segments ?? analysis.segments,
+    segmentAllowlistEntries: evaluation.segmentAllowlistEntries,
+    segmentSatisfiedBy: evaluation.segmentSatisfiedBy,
+  };
 }
