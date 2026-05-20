@@ -4,7 +4,6 @@ import path from "node:path";
 import { resolveUserPath } from "../utils.js";
 import { resolveBundledPluginsDir } from "./bundled-dir.js";
 import { getCurrentPluginMetadataSnapshot } from "./current-plugin-metadata-snapshot.js";
-import { hashJson } from "./installed-plugin-index-hash.js";
 import { fileSignatureMatches } from "./installed-plugin-index-hash.js";
 import { hasOptionalMissingPluginManifestFile } from "./installed-plugin-index-manifest.js";
 import { loadInstalledPluginIndexInstallRecordsSync } from "./installed-plugin-index-record-reader.js";
@@ -69,78 +68,6 @@ export type GetPluginRecordParams = LoadPluginRegistryParams & {
 function hasEnvFlag(env: NodeJS.ProcessEnv, name: string): boolean {
   const value = env[name]?.trim().toLowerCase();
   return Boolean(value && value !== "0" && value !== "false" && value !== "no");
-}
-
-const PLUGIN_REGISTRY_MEMO_RELEVANT_ENV_KEYS = [
-  "APPDATA",
-  "HOME",
-  "OPENCLAW_BUNDLED_PLUGINS_DIR",
-  "OPENCLAW_COMPATIBILITY_HOST_VERSION",
-  "OPENCLAW_CONFIG_PATH",
-  "OPENCLAW_DISABLE_BUNDLED_PLUGINS",
-  "OPENCLAW_DISABLE_BUNDLED_SOURCE_OVERLAYS",
-  "OPENCLAW_DISABLE_PERSISTED_PLUGIN_REGISTRY",
-  "OPENCLAW_HOME",
-  "OPENCLAW_NIX_MODE",
-  "OPENCLAW_STATE_DIR",
-  "USERPROFILE",
-  "XDG_CONFIG_HOME",
-] as const;
-
-const PLUGIN_REGISTRY_MEMO_CAPACITY = 8;
-
-type PluginRegistryMemoEntry = {
-  result: PluginRegistrySnapshotResult;
-};
-
-const pluginRegistrySnapshotMemo = new Map<string, PluginRegistryMemoEntry>();
-
-export function clearPluginRegistrySnapshotMemo(): void {
-  pluginRegistrySnapshotMemo.clear();
-}
-
-function pickRegistryMemoEnv(env: NodeJS.ProcessEnv): Record<string, string> {
-  return Object.fromEntries(
-    PLUGIN_REGISTRY_MEMO_RELEVANT_ENV_KEYS.flatMap((key) => {
-      const value = env[key];
-      return value === undefined ? [] : [[key, value]];
-    }),
-  );
-}
-
-function canMemoizePluginRegistrySnapshot(params: LoadPluginRegistryParams): boolean {
-  return (
-    params.candidates === undefined &&
-    params.diagnostics === undefined &&
-    params.installRecords === undefined &&
-    params.now === undefined &&
-    params.filePath === undefined &&
-    params.pluginIndexFilePath === undefined
-  );
-}
-
-function computePluginRegistrySnapshotMemoKey(params: LoadPluginRegistryParams): string {
-  const env = params.env ?? process.env;
-  return hashJson({
-    cwd: process.cwd(),
-    env: pickRegistryMemoEnv(env),
-    policyHash: params.config ? resolveInstalledPluginIndexPolicyHash(params.config) : null,
-    preferPersisted: params.preferPersisted ?? null,
-    stateDir: params.stateDir ?? null,
-    workspaceDir: params.workspaceDir ?? null,
-  });
-}
-
-function storePluginRegistrySnapshotMemo(key: string, result: PluginRegistrySnapshotResult): void {
-  pluginRegistrySnapshotMemo.delete(key);
-  pluginRegistrySnapshotMemo.set(key, { result });
-  if (pluginRegistrySnapshotMemo.size <= PLUGIN_REGISTRY_MEMO_CAPACITY) {
-    return;
-  }
-  const oldest = pluginRegistrySnapshotMemo.keys().next().value;
-  if (typeof oldest === "string") {
-    pluginRegistrySnapshotMemo.delete(oldest);
-  }
 }
 
 function canReuseCurrentPluginMetadataSnapshot(params: LoadPluginRegistryParams): boolean {
@@ -352,19 +279,8 @@ export function loadPluginRegistrySnapshotWithMetadata(
       diagnostics: [],
     };
   }
-  const memoEligible = canMemoizePluginRegistrySnapshot(params);
-  const memoKey = memoEligible ? computePluginRegistrySnapshotMemoKey(params) : undefined;
-  if (memoKey !== undefined) {
-    const cached = pluginRegistrySnapshotMemo.get(memoKey);
-    if (cached) {
-      return cached.result;
-    }
-  }
   const current = loadCurrentPluginRegistrySnapshotResult(params);
   if (current) {
-    if (memoKey !== undefined) {
-      storePluginRegistrySnapshotMemo(memoKey, current);
-    }
     return current;
   }
 
@@ -435,9 +351,6 @@ export function loadPluginRegistrySnapshotWithMetadata(
           source: "persisted",
           diagnostics,
         };
-        if (memoKey !== undefined) {
-          storePluginRegistrySnapshotMemo(memoKey, persistedResult);
-        }
         return persistedResult;
       }
     } else if (persistedReadsEnabled) {
@@ -457,7 +370,7 @@ export function loadPluginRegistrySnapshotWithMetadata(
     });
   }
 
-  const derivedResult: PluginRegistrySnapshotResult = {
+  return {
     snapshot: loadInstalledPluginIndex({
       ...params,
       ...(persistedInstallRecordReadsEnabled
@@ -467,10 +380,6 @@ export function loadPluginRegistrySnapshotWithMetadata(
     source: "derived",
     diagnostics,
   };
-  if (memoKey !== undefined) {
-    storePluginRegistrySnapshotMemo(memoKey, derivedResult);
-  }
-  return derivedResult;
 }
 
 function resolveSnapshot(params: LoadPluginRegistryParams = {}): PluginRegistrySnapshot {
