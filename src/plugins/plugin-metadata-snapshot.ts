@@ -46,10 +46,40 @@ type PersistedRegistryMemoState = {
   watchedFiles: readonly string[];
 };
 
-let pluginMetadataSnapshotMemo: PluginMetadataSnapshotMemo | undefined;
+const PLUGIN_METADATA_MEMO_CAPACITY = 8;
+const pluginMetadataSnapshotMemo = new Map<string, PluginMetadataSnapshotMemo>();
 
 export function clearLoadPluginMetadataSnapshotMemo(): void {
-  pluginMetadataSnapshotMemo = undefined;
+  pluginMetadataSnapshotMemo.clear();
+}
+
+function storePluginMetadataSnapshotMemo(entry: PluginMetadataSnapshotMemo): void {
+  pluginMetadataSnapshotMemo.delete(entry.key);
+  pluginMetadataSnapshotMemo.set(entry.key, entry);
+  if (pluginMetadataSnapshotMemo.size <= PLUGIN_METADATA_MEMO_CAPACITY) {
+    return;
+  }
+  const oldest = pluginMetadataSnapshotMemo.keys().next().value;
+  if (typeof oldest === "string") {
+    pluginMetadataSnapshotMemo.delete(oldest);
+  }
+}
+
+function findFastPathRegistryState(
+  fastHash: string,
+  contextHash: string,
+): PersistedRegistryMemoState | undefined {
+  for (const entry of pluginMetadataSnapshotMemo.values()) {
+    const state = entry.registryState;
+    if (
+      state.contextHash === contextHash &&
+      state.fastHash === fastHash &&
+      hashWatchedFiles(state.watchedFiles) === state.watchedFilesHash
+    ) {
+      return state;
+    }
+  }
+  return undefined;
 }
 
 const MEMO_RELEVANT_ENV_KEYS = [
@@ -495,28 +525,20 @@ function resolvePersistedRegistryMemoState(params: {
   };
 }
 
-function resolvePersistedRegistryMemoStateForLookup(
-  params: {
-    env: NodeJS.ProcessEnv;
-    preferPersisted?: boolean;
-    stateDir?: string;
-  },
-  memo: PluginMetadataSnapshotMemo | undefined,
-): PersistedRegistryMemoState {
+function resolvePersistedRegistryMemoStateForLookup(params: {
+  env: NodeJS.ProcessEnv;
+  preferPersisted?: boolean;
+  stateDir?: string;
+}): PersistedRegistryMemoState {
   const fastFingerprint = resolvePersistedRegistryFastMemoFingerprint(params);
   const fastHash = hashJson(fastFingerprint);
   const contextHash = resolvePersistedRegistryMemoContextHash({
     ...params,
     fastFingerprint,
   });
-  const registryState = memo?.registryState;
-  if (
-    registryState &&
-    registryState.contextHash === contextHash &&
-    registryState.fastHash === fastHash &&
-    hashWatchedFiles(registryState.watchedFiles) === registryState.watchedFilesHash
-  ) {
-    return registryState;
+  const fastPath = findFastPathRegistryState(fastHash, contextHash);
+  if (fastPath) {
+    return fastPath;
   }
   return resolvePersistedRegistryMemoState(params);
 }
@@ -703,32 +725,32 @@ export function loadPluginMetadataSnapshot(
   params: LoadPluginMetadataSnapshotParams,
 ): PluginMetadataSnapshot {
   const activeTimelineSpan = getActiveDiagnosticsTimelineSpan();
-  const memo = pluginMetadataSnapshotMemo;
   const env = params.env ?? process.env;
-  const registryState = resolvePersistedRegistryMemoStateForLookup(
-    {
-      env,
-      ...(params.stateDir ? { stateDir: resolveUserPath(params.stateDir, env) } : {}),
-      ...(params.preferPersisted !== undefined ? { preferPersisted: params.preferPersisted } : {}),
-    },
-    memo,
-  );
+  const registryState = resolvePersistedRegistryMemoStateForLookup({
+    env,
+    ...(params.stateDir ? { stateDir: resolveUserPath(params.stateDir, env) } : {}),
+    ...(params.preferPersisted !== undefined ? { preferPersisted: params.preferPersisted } : {}),
+  });
   const memoKey = computePluginMetadataSnapshotMemoKey({ params, registryState });
+  const cached = pluginMetadataSnapshotMemo.get(memoKey);
   perfMark("plugins.loadPluginMetadataSnapshot.enter", {
-    hasMemo: !!memo,
-    keyMatch: memo?.key === memoKey,
+    hasMemo: pluginMetadataSnapshotMemo.size > 0,
+    keyMatch: !!cached,
     memoKey: memoKey.slice(0, 16),
-    priorKey: memo?.key.slice(0, 16),
+    memoSize: pluginMetadataSnapshotMemo.size,
     hasIndex: params.index !== undefined,
     hasConfig: params.config !== undefined,
     hasWorkspaceDir: params.workspaceDir !== undefined,
     hasStateDir: params.stateDir !== undefined,
     hasPreferPersisted: params.preferPersisted !== undefined,
   });
-  if (memo?.key === memoKey) {
+  if (cached) {
+    // Refresh LRU position on hit.
+    pluginMetadataSnapshotMemo.delete(memoKey);
+    pluginMetadataSnapshotMemo.set(memoKey, cached);
     return measureDiagnosticsTimelineSpanSync(
       "plugins.metadata.scan",
-      () => clonePluginMetadataSnapshot(memo.snapshot),
+      () => clonePluginMetadataSnapshot(cached.snapshot),
       {
         phase: activeTimelineSpan?.phase ?? "startup",
         config: params.config,
@@ -761,11 +783,11 @@ export function loadPluginMetadataSnapshot(
       key: memoKey.slice(0, 16),
       registrySource: result.registrySource,
     });
-    pluginMetadataSnapshotMemo = {
+    storePluginMetadataSnapshotMemo({
       key: memoKey,
       registryState,
       snapshot: clonePluginMetadataSnapshot(result.snapshot),
-    };
+    });
   } else {
     perfMark("plugins.loadPluginMetadataSnapshot.notMemoized", {
       registrySource: result.registrySource,
