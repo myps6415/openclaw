@@ -154,11 +154,6 @@ function requirePluginRecord(
 }
 
 describe("loadPluginRegistrySnapshotWithMetadata", () => {
-  // Regression for Bug 5: loadPluginRegistrySnapshotWithMetadata previously
-  // had no memo of its own. Cold TUI startup logged ~489 calls all falling
-  // through to a fresh derived discovery cascade. A process-scoped LRU now
-  // memoizes results for the (config, env, workspaceDir, stateDir,
-  // preferPersisted) input shape.
   it("memoizes derived results across consecutive identical calls", () => {
     const env = createHermeticEnv(makeTempDir());
     const config = {};

@@ -71,10 +71,6 @@ function hasEnvFlag(env: NodeJS.ProcessEnv, name: string): boolean {
   return Boolean(value && value !== "0" && value !== "false" && value !== "no");
 }
 
-// Process-scoped memo for loadPluginRegistrySnapshotWithMetadata. Cleared
-// whenever the persisted installed-plugin index is written (see
-// clearCurrentPluginMetadataSnapshotState call sites in
-// installed-plugin-index-store.ts, which also clear this memo).
 const PLUGIN_REGISTRY_MEMO_RELEVANT_ENV_KEYS = [
   "APPDATA",
   "HOME",

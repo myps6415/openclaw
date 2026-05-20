@@ -736,7 +736,6 @@ export function loadPluginMetadataSnapshot(
   const memoKey = computePluginMetadataSnapshotMemoKey({ params, registryState });
   const cached = pluginMetadataSnapshotMemo.get(memoKey);
   if (cached) {
-    // Refresh LRU position on hit.
     pluginMetadataSnapshotMemo.delete(memoKey);
     pluginMetadataSnapshotMemo.set(memoKey, cached);
     return measureDiagnosticsTimelineSpanSync(

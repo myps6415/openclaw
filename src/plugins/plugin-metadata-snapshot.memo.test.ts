@@ -301,11 +301,6 @@ describe("loadPluginMetadataSnapshot process memo", () => {
     expect(loadPluginRegistrySnapshotWithMetadata).toHaveBeenCalledTimes(2);
   });
 
-  // Regression for Bug 3: previously the memo predicate gated derived
-  // snapshots to those whose diagnostics were exclusively
-  // persisted-registry-stale-policy, which discarded ~98% of cold-start
-  // derives. The memo now stores every non-empty derived snapshot and lets
-  // the watched-file/invalidation hooks own freshness.
   it.each([
     ["persisted-registry-missing", undefined],
     ["persisted-registry-stale-source", undefined],
@@ -326,12 +321,7 @@ describe("loadPluginMetadataSnapshot process memo", () => {
     expect(loadPluginRegistrySnapshotWithMetadata).toHaveBeenCalledOnce();
   });
 
-  // Regression for Bug 2: the stored memo key and the next call's lookup
-  // key were computed from asymmetric registryState inputs (lookup recomputed
-  // from disk without index, store recomputed with snapshot.index injected).
-  // That made consecutive identical calls miss the memo. The fix stores the
-  // lookup-time key/registryState verbatim; a second identical call must hit.
-  it("hits the memo on consecutive identical lookups (Bug 2 regression)", () => {
+  it("hits the memo on consecutive identical lookups", () => {
     const stateDir = tempStateDir();
     touchPersistedIndex(stateDir);
     loadPluginRegistrySnapshotWithMetadata.mockReturnValue({
@@ -347,10 +337,7 @@ describe("loadPluginMetadataSnapshot process memo", () => {
     expect(loadPluginRegistrySnapshotWithMetadata).toHaveBeenCalledOnce();
   });
 
-  // Regression for Bug 4: the single-slot memo thrashed when two callers
-  // alternated with different stable input shapes (each evicted the other).
-  // The LRU keeps both entries and serves cache hits to both shapes.
-  it("retains entries for multiple input shapes without thrashing (Bug 4 regression)", () => {
+  it("retains entries for multiple input shapes without thrashing", () => {
     const stateDir = tempStateDir();
     touchPersistedIndex(stateDir);
     loadPluginRegistrySnapshotWithMetadata.mockReturnValue({
@@ -359,16 +346,13 @@ describe("loadPluginMetadataSnapshot process memo", () => {
       diagnostics: [{ level: "warn", code: "persisted-registry-stale-source", message: "stale" }],
     });
 
-    // Two distinct input shapes (with vs. without preferPersisted).
     loadPluginMetadataSnapshot({ config: {}, env: {}, stateDir });
     loadPluginMetadataSnapshot({ config: {}, env: {}, stateDir, preferPersisted: true });
-    // Alternate; with a single-slot memo, each call would evict the other.
     loadPluginMetadataSnapshot({ config: {}, env: {}, stateDir });
     loadPluginMetadataSnapshot({ config: {}, env: {}, stateDir, preferPersisted: true });
     loadPluginMetadataSnapshot({ config: {}, env: {}, stateDir });
     loadPluginMetadataSnapshot({ config: {}, env: {}, stateDir, preferPersisted: true });
 
-    // Each shape is computed exactly once; subsequent alternations hit memo.
     expect(loadPluginRegistrySnapshotWithMetadata).toHaveBeenCalledTimes(2);
   });
 
