@@ -27,6 +27,8 @@ const outputPath = path.join(distDir, "cli-startup-metadata.json");
 const extensionsDir = path.join(rootDir, "extensions");
 const ROOT_HELP_RENDER_TIMEOUT_MS = 120_000;
 const BROWSER_HELP_RENDER_TIMEOUT_MS = 120_000;
+const SUBCOMMAND_HELP_RENDER_TIMEOUT_MS = 120_000;
+const PRECOMPUTED_SUBCOMMAND_HELP_COMMANDS = ["doctor", "gateway", "models", "plugins"] as const;
 const CORE_CHANNEL_ORDER = [
   "telegram",
   "whatsapp",
@@ -49,6 +51,8 @@ type BundledChannelCatalog = {
   signature: string;
 };
 
+type PrecomputedSubcommandHelpCommand = (typeof PRECOMPUTED_SUBCOMMAND_HELP_COMMANDS)[number];
+type PrecomputedSubcommandHelpText = Record<PrecomputedSubcommandHelpCommand, string>;
 type RootHelpRenderContext = Pick<RootHelpRenderOptions, "config" | "env">;
 
 function resolveRootHelpBundleIdentity(
@@ -90,6 +94,22 @@ function resolveBrowserHelpSourceSignature(): string {
     path.join(rootDir, "src/cli/program/help.ts"),
     path.join(rootDir, "src/cli/program/context.ts"),
     path.join(rootDir, "src/cli/banner.ts"),
+  ]);
+  return hash.digest("hex");
+}
+
+function resolveSubcommandHelpSourceSignature(): string {
+  const hash = createHash("sha1");
+  updateHashFromFiles(hash, [
+    path.join(rootDir, "src/cli/program/help.ts"),
+    path.join(rootDir, "src/cli/program/context.ts"),
+    path.join(rootDir, "src/cli/banner.ts"),
+    path.join(rootDir, "src/cli/program/register.maintenance.ts"),
+    path.join(rootDir, "src/cli/gateway-cli.ts"),
+    path.join(rootDir, "src/cli/gateway-cli/register.ts"),
+    path.join(rootDir, "src/cli/gateway-cli/run-command.ts"),
+    path.join(rootDir, "src/cli/models-cli.ts"),
+    path.join(rootDir, "src/cli/plugins-cli.ts"),
   ]);
   return hash.digest("hex");
 }
@@ -312,6 +332,88 @@ function renderSourceBrowserHelpText(
   return result.stdout ?? "";
 }
 
+function renderSourceSubcommandHelpText(
+  commandName: PrecomputedSubcommandHelpCommand,
+  renderContext: RootHelpRenderContext = createIsolatedRootHelpRenderContext(),
+): string {
+  const helpUrl = pathToFileURL(path.join(rootDir, "src/cli/program/help.ts")).href;
+  const contextUrl = pathToFileURL(path.join(rootDir, "src/cli/program/context.ts")).href;
+  const maintenanceUrl = pathToFileURL(
+    path.join(rootDir, "src/cli/program/register.maintenance.ts"),
+  ).href;
+  const gatewayUrl = pathToFileURL(path.join(rootDir, "src/cli/gateway-cli.ts")).href;
+  const modelsUrl = pathToFileURL(path.join(rootDir, "src/cli/models-cli.ts")).href;
+  const pluginsUrl = pathToFileURL(path.join(rootDir, "src/cli/plugins-cli.ts")).href;
+  const inlineModule = [
+    `const { Command } = await import("commander");`,
+    `const { configureProgramHelp } = await import(${JSON.stringify(helpUrl)});`,
+    `const { createProgramContext } = await import(${JSON.stringify(contextUrl)});`,
+    `const program = new Command();`,
+    `configureProgramHelp(program, createProgramContext());`,
+    `switch (${JSON.stringify(commandName)}) {`,
+    `  case "doctor": {`,
+    `    const mod = await import(${JSON.stringify(maintenanceUrl)});`,
+    `    mod.registerMaintenanceCommands(program);`,
+    `    break;`,
+    `  }`,
+    `  case "gateway": {`,
+    `    const mod = await import(${JSON.stringify(gatewayUrl)});`,
+    `    mod.registerGatewayCli(program);`,
+    `    break;`,
+    `  }`,
+    `  case "models": {`,
+    `    const mod = await import(${JSON.stringify(modelsUrl)});`,
+    `    mod.registerModelsCli(program);`,
+    `    break;`,
+    `  }`,
+    `  case "plugins": {`,
+    `    const mod = await import(${JSON.stringify(pluginsUrl)});`,
+    `    mod.registerPluginsCli(program);`,
+    `    break;`,
+    `  }`,
+    `  default: throw new Error("Unsupported precomputed subcommand help.");`,
+    `}`,
+    `const command = program.commands.find((cmd) => cmd.name() === ${JSON.stringify(commandName)});`,
+    `if (!command) throw new Error("Command was not registered.");`,
+    `command.outputHelp();`,
+    "process.exit(0);",
+  ].join("\n");
+  const result = spawnSync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", inlineModule],
+    {
+      cwd: rootDir,
+      encoding: "utf8",
+      env: {
+        ...renderContext.env,
+        OPENCLAW_DISABLE_CLI_STARTUP_HELP_FAST_PATH: "1",
+      },
+      timeout: SUBCOMMAND_HELP_RENDER_TIMEOUT_MS,
+    },
+  );
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    const stderr = result.stderr?.trim();
+    throw new Error(
+      `Failed to render source ${commandName} help` +
+        (stderr ? `: ${stderr}` : result.signal ? `: terminated by ${result.signal}` : ""),
+    );
+  }
+  return result.stdout ?? "";
+}
+
+function renderSourceSubcommandHelpTextRecord(
+  renderContext: RootHelpRenderContext = createIsolatedRootHelpRenderContext(),
+): PrecomputedSubcommandHelpText {
+  const entries = PRECOMPUTED_SUBCOMMAND_HELP_COMMANDS.map((commandName) => [
+    commandName,
+    renderSourceSubcommandHelpText(commandName, renderContext),
+  ]);
+  return Object.fromEntries(entries) as PrecomputedSubcommandHelpText;
+}
+
 export async function writeCliStartupMetadata(options?: {
   distDir?: string;
   outputPath?: string;
@@ -319,6 +421,7 @@ export async function writeCliStartupMetadata(options?: {
   renderBundledRootHelpText?: typeof renderBundledRootHelpText;
   renderSourceRootHelpText?: typeof renderSourceRootHelpText;
   renderSourceBrowserHelpText?: typeof renderSourceBrowserHelpText;
+  renderSourceSubcommandHelpTextRecord?: typeof renderSourceSubcommandHelpTextRecord;
 }): Promise<void> {
   const resolvedDistDir = options?.distDir ?? distDir;
   const resolvedOutputPath = options?.outputPath ?? outputPath;
@@ -326,6 +429,7 @@ export async function writeCliStartupMetadata(options?: {
   const channelCatalog = readBundledChannelCatalog(resolvedExtensionsDir);
   const bundleIdentity = resolveRootHelpBundleIdentity(resolvedDistDir);
   const browserHelpSourceSignature = resolveBrowserHelpSourceSignature();
+  const subcommandHelpSourceSignature = resolveSubcommandHelpSourceSignature();
   const bundledPluginsDir = path.join(resolvedDistDir, "extensions");
   const renderContext = createIsolatedRootHelpRenderContext(
     existsSync(bundledPluginsDir) ? bundledPluginsDir : resolvedExtensionsDir,
@@ -336,16 +440,20 @@ export async function writeCliStartupMetadata(options?: {
     const existing = JSON.parse(readFileSync(resolvedOutputPath, "utf8")) as {
       rootHelpBundleSignature?: unknown;
       browserHelpSourceSignature?: unknown;
+      subcommandHelpSourceSignature?: unknown;
       channelCatalogSignature?: unknown;
       browserHelpText?: unknown;
+      subcommandHelpText?: unknown;
     };
     if (
       bundleIdentity &&
       existing.rootHelpBundleSignature === bundleIdentity.signature &&
       existing.browserHelpSourceSignature === browserHelpSourceSignature &&
+      existing.subcommandHelpSourceSignature === subcommandHelpSourceSignature &&
       existing.channelCatalogSignature === channelCatalog.signature &&
       typeof existing.browserHelpText === "string" &&
-      existing.browserHelpText.length > 0
+      existing.browserHelpText.length > 0 &&
+      hasAllPrecomputedSubcommandHelpText(existing.subcommandHelpText)
     ) {
       return;
     }
@@ -365,6 +473,9 @@ export async function writeCliStartupMetadata(options?: {
   const browserHelpText = (options?.renderSourceBrowserHelpText ?? renderSourceBrowserHelpText)(
     renderContext,
   );
+  const subcommandHelpText = (
+    options?.renderSourceSubcommandHelpTextRecord ?? renderSourceSubcommandHelpTextRecord
+  )(renderContext);
 
   mkdirSync(resolvedDistDir, { recursive: true });
   writeFileSync(
@@ -376,13 +487,25 @@ export async function writeCliStartupMetadata(options?: {
         channelCatalogSignature: channelCatalog.signature,
         rootHelpBundleSignature: bundleIdentity?.signature ?? null,
         browserHelpSourceSignature,
+        subcommandHelpSourceSignature,
         browserHelpText,
+        subcommandHelpText,
         rootHelpText,
       },
       null,
       2,
     )}\n`,
     "utf8",
+  );
+}
+
+function hasAllPrecomputedSubcommandHelpText(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const record = value as Partial<Record<PrecomputedSubcommandHelpCommand, unknown>>;
+  return PRECOMPUTED_SUBCOMMAND_HELP_COMMANDS.every(
+    (commandName) => typeof record[commandName] === "string" && record[commandName].length > 0,
   );
 }
 

@@ -11,6 +11,7 @@ import {
   normalizeOptionalLowercaseString,
 } from "../shared/string-coerce.js";
 import { resolveCliArgvInvocation } from "./argv-invocation.js";
+import { hasFlag } from "./argv.js";
 import {
   resolveCliCommandPathPolicy,
   resolveCliNetworkProxyPolicy,
@@ -21,10 +22,15 @@ import { getSubCliParentDefaultHelpCommands } from "./program/subcli-descriptors
 
 const ROOT_HELP_ALIASES = new Set(["tools"]);
 const SETUP_ONBOARD_CONFIGURE_HELP_COMMANDS = new Set(["setup", "onboard", "configure"]);
+const PRECOMPUTED_SUBCOMMAND_HELP_COMMANDS = new Set(["doctor", "gateway", "models", "plugins"]);
 const BARE_PARENT_DEFAULT_HELP_COMMANDS = new Set([
   ...getCoreCliParentDefaultHelpCommands(),
   ...getSubCliParentDefaultHelpCommands(),
 ]);
+
+function hasHelpFlag(argv: string[]): boolean {
+  return hasFlag(argv, "-h") || hasFlag(argv, "--help");
+}
 
 function isBareParentDefaultHelpArgv(argv: string[]): boolean {
   const invocation = resolveCliArgvInvocation(argv);
@@ -85,7 +91,7 @@ export function shouldUseBrowserHelpFastPath(
   return (
     invocation.commandPath.length === 1 &&
     invocation.commandPath[0] === "browser" &&
-    invocation.hasHelpOrVersion
+    hasHelpFlag(argv)
   );
 }
 
@@ -102,6 +108,28 @@ export function shouldUseSetupOnboardConfigureHelpFastPath(
     SETUP_ONBOARD_CONFIGURE_HELP_COMMANDS.has(invocation.commandPath[0] ?? "") &&
     invocation.hasHelpOrVersion
   );
+}
+
+export function resolvePrecomputedSubcommandHelpFastPath(
+  argv: string[],
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  if (env.OPENCLAW_DISABLE_CLI_STARTUP_HELP_FAST_PATH === "1") {
+    return null;
+  }
+  const invocation = resolveCliArgvInvocation(argv);
+  if (
+    invocation.commandPath.length !== 1 ||
+    !hasHelpFlag(argv) ||
+    invocation.isRootHelpInvocation
+  ) {
+    return null;
+  }
+  const commandName = invocation.commandPath[0];
+  if (!commandName || !PRECOMPUTED_SUBCOMMAND_HELP_COMMANDS.has(commandName)) {
+    return null;
+  }
+  return commandName;
 }
 
 export function shouldStartCrestodianForBareRoot(argv: string[]): boolean {

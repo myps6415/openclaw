@@ -22,14 +22,12 @@ import {
   consumeGatewayFastPathRootOptionToken,
   consumeGatewayRunOptionToken,
 } from "./gateway-run-argv.js";
-import {
-  hasJsonOutputFlag,
-  withConsoleLogsRoutedToStderrForJson,
-} from "./json-output-mode.js";
+import { hasJsonOutputFlag, withConsoleLogsRoutedToStderrForJson } from "./json-output-mode.js";
 import { applyCliProfileEnv, parseCliProfileArgs } from "./profile.js";
 import { getCoreCliCommandNames } from "./program/core-command-descriptors.js";
 import { getSubCliEntries } from "./program/subcli-descriptors.js";
 import {
+  resolvePrecomputedSubcommandHelpFastPath,
   resolveMissingPluginCommandMessage as resolveMissingPluginCommandMessageFromPolicy,
   rewriteUpdateFlagArgv,
   shouldEnsureCliPath,
@@ -43,6 +41,7 @@ import {
 import { normalizeWindowsArgv } from "./windows-argv.js";
 
 export {
+  resolvePrecomputedSubcommandHelpFastPath,
   rewriteUpdateFlagArgv,
   shouldEnsureCliPath,
   shouldStartCrestodianForBareRoot,
@@ -559,6 +558,14 @@ export async function runCli(argv: string[] = process.argv) {
       }
     }
 
+    const precomputedSubcommandHelp = resolvePrecomputedSubcommandHelpFastPath(normalizedArgv);
+    if (precomputedSubcommandHelp) {
+      const { outputPrecomputedSubcommandHelpText } = await import("./root-help-metadata.js");
+      if (outputPrecomputedSubcommandHelpText(precomputedSubcommandHelp)) {
+        return;
+      }
+    }
+
     const shouldRunBareRootCrestodian = shouldStartCrestodianForBareRoot(normalizedArgv);
     const shouldRunModernOnboardCrestodian = shouldStartCrestodianForModernOnboard(normalizedArgv);
     if (shouldRunBareRootCrestodian || shouldRunModernOnboardCrestodian) {
@@ -743,15 +750,10 @@ export async function runCli(argv: string[] = process.argv) {
           const { registerPluginCliCommandsFromValidatedConfig } =
             await import("../plugins/cli.js");
           return await withConsoleLogsRoutedToStderrForJson(parseArgv, () =>
-            registerPluginCliCommandsFromValidatedConfig(
-              program,
-              undefined,
-              undefined,
-              {
-                mode: "lazy",
-                primary,
-              },
-            ),
+            registerPluginCliCommandsFromValidatedConfig(program, undefined, undefined, {
+              mode: "lazy",
+              primary,
+            }),
           );
         });
         if (config) {

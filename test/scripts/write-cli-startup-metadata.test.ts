@@ -38,17 +38,33 @@ describe("write-cli-startup-metadata", () => {
       },
       renderSourceRootHelpText: () => "Usage: openclaw\n",
       renderSourceBrowserHelpText: () => "Usage: openclaw browser\n",
+      renderSourceSubcommandHelpTextRecord: () => ({
+        doctor: "Usage: openclaw doctor\n",
+        gateway: "Usage: openclaw gateway\n",
+        models: "Usage: openclaw models\n",
+        plugins: "Usage: openclaw plugins\n",
+      }),
     });
 
     const written = JSON.parse(readFileSync(outputPath, "utf8")) as {
       browserHelpText: string;
       channelOptions: string[];
       rootHelpText: string;
+      subcommandHelpText: {
+        doctor: string;
+        gateway: string;
+        models: string;
+        plugins: string;
+      };
     };
     expect(written.channelOptions).toContain("matrix");
     expect(written.browserHelpText).toContain("Usage:");
     expect(written.browserHelpText).toContain("openclaw browser");
     expect(written.rootHelpText).toContain("Usage:");
     expect(written.rootHelpText).toContain("openclaw");
+    expect(written.subcommandHelpText.doctor).toContain("openclaw doctor");
+    expect(written.subcommandHelpText.gateway).toContain("openclaw gateway");
+    expect(written.subcommandHelpText.models).toContain("openclaw models");
+    expect(written.subcommandHelpText.plugins).toContain("openclaw plugins");
   });
 });
