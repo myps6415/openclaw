@@ -6,6 +6,7 @@ Docs: https://docs.openclaw.ai
 
 ### Changes
 
+- Control UI: add guarded dashboard keyboard shortcuts for focusing chat, jumping to new messages, and dismissing transient UI without stealing keys from text-entry controls. Fixes #81946. Thanks @BunsDev.
 - Tests/perf: isolate doctor core health check unit coverage from real skills/workspace discovery so `doctor-core-checks` no longer dominates unit perf while keeping one real skills-readiness smoke. (#84493) Thanks @frankekn.
 
 ### Fixes
