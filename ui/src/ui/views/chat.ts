@@ -1434,7 +1434,8 @@ export function renderChat(props: ChatProps) {
               class="chat-new-messages"
               type="button"
               @click=${props.onScrollToBottom}
-              aria-label="New messages, press N"
+              aria-label="New messages"
+              aria-keyshortcuts="N"
               title="New messages (N)"
             >
               ${icons.arrowDown} <span>New messages</span><kbd>N</kbd>
