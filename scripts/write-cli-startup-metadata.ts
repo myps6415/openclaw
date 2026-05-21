@@ -104,12 +104,16 @@ function resolveSubcommandHelpSourceSignature(): string {
     path.join(rootDir, "src/cli/program/help.ts"),
     path.join(rootDir, "src/cli/program/context.ts"),
     path.join(rootDir, "src/cli/banner.ts"),
+    path.join(rootDir, "src/cli/help-format.ts"),
+    path.join(rootDir, "src/cli/daemon-cli/register-service-commands.ts"),
     path.join(rootDir, "src/cli/program/register.maintenance.ts"),
     path.join(rootDir, "src/cli/gateway-cli.ts"),
     path.join(rootDir, "src/cli/gateway-cli/register.ts"),
     path.join(rootDir, "src/cli/gateway-cli/run-command.ts"),
     path.join(rootDir, "src/cli/models-cli.ts"),
     path.join(rootDir, "src/cli/plugins-cli.ts"),
+    path.join(rootDir, "src/terminal/links.ts"),
+    path.join(rootDir, "src/terminal/theme.ts"),
   ]);
   return hash.digest("hex");
 }
